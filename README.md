@@ -23,7 +23,7 @@ This project covers the API Gateway & Event System Engineer role by implementing
 ## Structure
 
 ```text
-apps/
+API Gateway & Event System Engineer/
   gateway/                 # This repo uses gateway/ at workspace root
 packages/
   events/                  # @ai-platform/events shared BullMQ event package
