@@ -1,0 +1,19 @@
+{
+  "name": "ai-platform",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "gateway",
+    "packages/events"
+  ],
+  "scripts": {
+    "build": "npm run build -w @ai-platform/events && npm run build -w gateway",
+    "test": "npm run test -w gateway",
+    "dev:gateway": "npm run dev -w gateway",
+    "start:gateway": "npm run start -w gateway",
+    "mock:services": "npm run mock:services -w gateway",
+    "worker:crm": "npm run worker:crm -w gateway",
+    "worker:onboarding": "npm run worker:onboarding -w gateway",
+    "worker:data-room": "npm run worker:data-room -w gateway"
+  }
+}
