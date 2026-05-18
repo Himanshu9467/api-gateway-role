@@ -84,7 +84,9 @@ export function eventRoutes(eventBus: EventBus, logger: Logger): Router {
   );
 
   router.post(
-  "/api/events/client-created",
+    "/api/events/document-uploaded",
+    authenticate,
+    requireRoles(["admin", "user", "service"]),
     async (req, res, next) => {
       try {
         const body = documentUploadedRequestSchema.parse(req.body);

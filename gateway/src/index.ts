@@ -21,6 +21,10 @@ import { healthRoutes } from "./routes/health.routes";
 import { eventRoutes } from "./routes/event.routes";
 import { observabilityRoutes } from "./routes/observability.routes";
 import { orchestrationRoutes } from "./routes/orchestration.routes";
+import { authRoutes } from "./routes/auth.routes";
+import { chatRoutes } from "./routes/chat.routes";
+import { dashboardRoutes } from "./routes/dashboard.routes";
+import { onboardingFrontendRoutes } from "./routes/onboardingFrontend.routes";
 import { CircuitBreakerService } from "./services/circuitBreaker.service";
 import { HealthService } from "./services/health.service";
 import { registerProxyRoutes } from "./services/proxy.service";
@@ -73,6 +77,10 @@ async function bootstrap(): Promise<void> {
   app.use(docsRoutes());
   app.use(observabilityRoutes(metrics));
   app.use(healthRoutes(healthService, eventBus));
+  app.use(authRoutes());
+  app.use(dashboardRoutes());
+  app.use(chatRoutes());
+  app.use(onboardingFrontendRoutes());
   app.use(eventRoutes(eventBus, logger));
   app.use(orchestrationRoutes(orchestrator));
 

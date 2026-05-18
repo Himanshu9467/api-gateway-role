@@ -23,6 +23,10 @@ import { MetricsRegistry, metricsMiddleware } from "../observability/metrics";
 import { docsRoutes } from "../routes/docs.routes";
 import { observabilityRoutes } from "../routes/observability.routes";
 import { orchestrationRoutes } from "../routes/orchestration.routes";
+import { authRoutes } from "../routes/auth.routes";
+import { dashboardRoutes } from "../routes/dashboard.routes";
+import { chatRoutes } from "../routes/chat.routes";
+import { onboardingFrontendRoutes } from "../routes/onboardingFrontend.routes";
 
 const servers: Server[] = [];
 
@@ -210,6 +214,100 @@ describe("gateway event routes", () => {
       "crm-service",
       "onboarding-service"
     ]);
+  });
+});
+
+describe("frontend-facing gateway routes", () => {
+  it("issues JWTs from mock auth and serves dashboard data", async () => {
+    const baseUrl = await startApp((app) => {
+      app.use(express.json());
+      app.use(requestIdMiddleware);
+      app.use(authRoutes());
+      app.use(dashboardRoutes());
+    });
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "user@example.com", password: "password" })
+    });
+    const loginBody = await loginResponse.json();
+    const dashboardResponse = await fetch(`${baseUrl}/api/dashboard/summary`, {
+      headers: { authorization: `Bearer ${loginBody.token}` }
+    });
+    const clientsResponse = await fetch(`${baseUrl}/api/dashboard/clients`, {
+      headers: { authorization: `Bearer ${loginBody.token}` }
+    });
+    const activityResponse = await fetch(`${baseUrl}/api/dashboard/activity`, {
+      headers: { authorization: `Bearer ${loginBody.token}` }
+    });
+
+    assert.equal(loginResponse.status, 200);
+    assert.equal(dashboardResponse.status, 200);
+    assert.equal(clientsResponse.status, 200);
+    assert.equal(activityResponse.status, 200);
+    assert.equal(typeof (await dashboardResponse.json()).totalClients, "number");
+    assert.ok(Array.isArray(await clientsResponse.json()));
+    assert.ok(Array.isArray(await activityResponse.json()));
+  });
+
+  it("supports client creation, onboarding progress, documents, and chat", async () => {
+    const baseUrl = await startApp((app) => {
+      app.use(express.json());
+      app.use(requestIdMiddleware);
+      app.use(authRoutes());
+      app.use(dashboardRoutes());
+      app.use(onboardingFrontendRoutes());
+      app.use(chatRoutes());
+    });
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "user@example.com", password: "password" })
+    });
+    const { token } = await loginResponse.json();
+    const headers = {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`
+    };
+    const clientResponse = await fetch(`${baseUrl}/api/clients`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        companyName: "NewCo",
+        contactPerson: "Nina Shah",
+        email: "nina@example.com",
+        jurisdiction: "India",
+        serviceTier: "Starter",
+        clientType: "Startup"
+      })
+    });
+    const client = await clientResponse.json();
+    const progressResponse = await fetch(`${baseUrl}/api/onboarding/${client.id}/progress`, {
+      headers
+    });
+    const documentsResponse = await fetch(
+      `${baseUrl}/api/onboarding/${client.id}/documents?step=identity`,
+      { headers }
+    );
+    const chatResponse = await fetch(`${baseUrl}/api/ai/chat`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        clientId: client.id,
+        stepKey: "identity",
+        message: "What is missing?"
+      })
+    });
+
+    assert.equal(clientResponse.status, 201);
+    assert.equal(progressResponse.status, 200);
+    assert.equal(documentsResponse.status, 200);
+    assert.equal(chatResponse.status, 200);
+    assert.equal((await progressResponse.json()).clientId, client.id);
+    assert.ok(Array.isArray(await documentsResponse.json()));
+    assert.equal((await chatResponse.json()).message.role, "assistant");
   });
 });
 
