@@ -1,6 +1,8 @@
 import { startExampleSubscriber } from "./createSubscriber";
+import { provisionDataRoom } from "../services/dataRoomState.service";
 
 void startExampleSubscriber("data-room-service", "client.created", async (event) => {
+  const room = provisionDataRoom(event);
   console.log(
     JSON.stringify({
       timestamp: new Date().toISOString(),
@@ -11,6 +13,8 @@ void startExampleSubscriber("data-room-service", "client.created", async (event)
       eventId: event.id,
       clientId: event.payload.clientId,
       companyName: event.payload.companyName,
+      roomId: room.roomId,
+      createdAt: room.createdAt,
       correlationId: event.correlationId
     })
   );

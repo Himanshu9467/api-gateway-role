@@ -1,9 +1,11 @@
 import { startExampleSubscribers } from "./createSubscriber";
+import { associateCrmDocument, createCrmRecord } from "../services/crmState.service";
 
 void startExampleSubscribers("crm-service", [
   {
     eventName: "client.created",
     handler: async (event) => {
+      const record = createCrmRecord(event);
       console.log(
         JSON.stringify({
           timestamp: new Date().toISOString(),
@@ -14,6 +16,7 @@ void startExampleSubscribers("crm-service", [
           eventId: event.id,
           clientId: event.payload.clientId,
           companyName: event.payload.companyName,
+          crmId: record.crmId,
           correlationId: event.correlationId
         })
       );
@@ -22,6 +25,7 @@ void startExampleSubscribers("crm-service", [
   {
     eventName: "document.uploaded",
     handler: async (event) => {
+      const record = associateCrmDocument(event);
       console.log(
         JSON.stringify({
           timestamp: new Date().toISOString(),
@@ -33,6 +37,8 @@ void startExampleSubscribers("crm-service", [
           clientId: event.payload.clientId,
           documentId: event.payload.documentId,
           fileName: event.payload.fileName,
+          crmId: record?.crmId,
+          associated: Boolean(record),
           correlationId: event.correlationId
         })
       );

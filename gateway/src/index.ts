@@ -78,9 +78,9 @@ async function bootstrap(): Promise<void> {
   app.use(observabilityRoutes(metrics));
   app.use(healthRoutes(healthService, eventBus));
   app.use(authRoutes());
-  app.use(dashboardRoutes());
+  app.use(dashboardRoutes(eventBus));
   app.use(chatRoutes());
-  app.use(onboardingFrontendRoutes());
+  app.use(onboardingFrontendRoutes(eventBus));
   app.use(eventRoutes(eventBus, logger));
   app.use(orchestrationRoutes(orchestrator));
 

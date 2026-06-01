@@ -27,6 +27,16 @@ import { authRoutes } from "../routes/auth.routes";
 import { dashboardRoutes } from "../routes/dashboard.routes";
 import { chatRoutes } from "../routes/chat.routes";
 import { onboardingFrontendRoutes } from "../routes/onboardingFrontend.routes";
+import { createCrmRecord, associateCrmDocument } from "../services/crmState.service";
+import { provisionDataRoom } from "../services/dataRoomState.service";
+import {
+  createClient,
+  getOnboardingProgress
+} from "../services/frontendMockData.service";
+import {
+  initializeOnboardingState,
+  updateOnboardingProgress
+} from "../services/onboardingState.service";
 
 const servers: Server[] = [];
 
@@ -223,7 +233,7 @@ describe("frontend-facing gateway routes", () => {
       app.use(express.json());
       app.use(requestIdMiddleware);
       app.use(authRoutes());
-      app.use(dashboardRoutes());
+      app.use(dashboardRoutes(new CapturingEventBus()));
     });
 
     const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
@@ -256,8 +266,8 @@ describe("frontend-facing gateway routes", () => {
       app.use(express.json());
       app.use(requestIdMiddleware);
       app.use(authRoutes());
-      app.use(dashboardRoutes());
-      app.use(onboardingFrontendRoutes());
+      app.use(dashboardRoutes(new CapturingEventBus()));
+      app.use(onboardingFrontendRoutes(new CapturingEventBus()));
       app.use(chatRoutes());
     });
 
@@ -308,6 +318,198 @@ describe("frontend-facing gateway routes", () => {
     assert.equal((await progressResponse.json()).clientId, client.id);
     assert.ok(Array.isArray(await documentsResponse.json()));
     assert.equal((await chatResponse.json()).message.role, "assistant");
+  });
+
+  it("publishes client.created from frontend client creation without changing response shape", async () => {
+    const eventBus = new CapturingEventBus();
+    const baseUrl = await startApp((app) => {
+      app.use(express.json());
+      app.use(requestIdMiddleware);
+      app.use(authRoutes());
+      app.use(dashboardRoutes(eventBus));
+    });
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "user@example.com", password: "password" })
+    });
+    const { token } = await loginResponse.json();
+    const response = await fetch(`${baseUrl}/api/clients`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+        "x-request-id": "req-client-created"
+      },
+      body: JSON.stringify({
+        companyName: "PublishCo",
+        contactPerson: "Pia Singh",
+        email: "pia@example.com",
+        jurisdiction: "Singapore",
+        serviceTier: "Professional",
+        clientType: "Corporate"
+      })
+    });
+    const client = await response.json();
+
+    assert.equal(response.status, 201);
+    assert.equal(client.name, "PublishCo");
+    assert.equal(eventBus.published.length, 1);
+    assert.equal(eventBus.published[0]?.eventName, "client.created");
+    const payload = eventBus.published[0]?.payload as EventPayload<"client.created">;
+    assert.equal(payload.clientId, client.id);
+    assert.equal(payload.companyName, "PublishCo");
+    assert.match(payload.createdBy, /^user-/);
+    assert.equal(payload.plan, "growth");
+    assert.deepEqual(eventBus.published[0]?.options?.targets, [
+      "crm-service",
+      "data-room-service",
+      "onboarding-service"
+    ]);
+    assert.equal(eventBus.published[0]?.options?.correlationId, "req-client-created");
+  });
+
+  it("publishes document.uploaded from frontend upload without changing response shape", async () => {
+    const eventBus = new CapturingEventBus();
+    const baseUrl = await startApp((app) => {
+      app.use(express.json());
+      app.use(requestIdMiddleware);
+      app.use(authRoutes());
+      app.use(dashboardRoutes(eventBus));
+      app.use(onboardingFrontendRoutes(eventBus));
+    });
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "user@example.com", password: "password" })
+    });
+    const { token } = await loginResponse.json();
+    const headers = {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`
+    };
+    const clientResponse = await fetch(`${baseUrl}/api/clients`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        companyName: "UploadCo",
+        contactPerson: "Uma Rao",
+        email: "uma@example.com",
+        jurisdiction: "India",
+        serviceTier: "Starter",
+        clientType: "Startup"
+      })
+    });
+    const client = await clientResponse.json();
+
+    eventBus.published.length = 0;
+    const uploadResponse = await fetch(
+      `${baseUrl}/api/onboarding/${client.id}/documents/upload`,
+      {
+        method: "POST",
+        headers: {
+          ...headers,
+          "x-request-id": "req-document-uploaded"
+        },
+        body: JSON.stringify({
+          stepKey: "company_documents",
+          fileName: "incorporation.pdf"
+        })
+      }
+    );
+    const upload = await uploadResponse.json();
+
+    assert.equal(uploadResponse.status, 201);
+    assert.equal(upload.document.fileName, "incorporation.pdf");
+    assert.equal(eventBus.published.length, 1);
+    assert.equal(eventBus.published[0]?.eventName, "document.uploaded");
+    const payload = eventBus.published[0]?.payload as EventPayload<"document.uploaded">;
+    assert.equal(payload.clientId, client.id);
+    assert.equal(payload.documentId, upload.document.id);
+    assert.equal(payload.fileName, "incorporation.pdf");
+    assert.match(payload.uploadedBy, /^user-/);
+    assert.equal(eventBus.published[0]?.options?.metadata?.stepKey, "company_documents");
+    assert.deepEqual(eventBus.published[0]?.options?.targets, [
+      "crm-service",
+      "onboarding-service"
+    ]);
+  });
+});
+
+describe("worker business side effects", () => {
+  it("creates CRM records and associates uploaded documents", () => {
+    const created = testEvent("client.created", {
+      clientId: "client-worker-crm",
+      companyName: "Worker CRM",
+      createdBy: "user@example.com",
+      plan: "growth"
+    });
+    const record = createCrmRecord(created);
+    const uploaded = testEvent("document.uploaded", {
+      clientId: "client-worker-crm",
+      documentId: "doc-worker-crm",
+      fileName: "passport.pdf",
+      uploadedBy: "user@example.com"
+    });
+    const updated = associateCrmDocument(uploaded);
+
+    assert.equal(record.crmId, "crm-client-worker-crm");
+    assert.equal(updated?.documents.length, 1);
+    assert.equal(updated?.documents[0]?.documentId, "doc-worker-crm");
+  });
+
+  it("provisions data-room metadata for client.created", () => {
+    const room = provisionDataRoom(
+      testEvent("client.created", {
+        clientId: "client-worker-room",
+        companyName: "Worker Room",
+        createdBy: "user@example.com",
+        plan: "enterprise"
+      })
+    );
+
+    assert.equal(room.roomId, "room-client-worker-room");
+    assert.equal(room.clientId, "client-worker-room");
+    assert.match(room.createdAt, /^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("updates frontend onboarding progress from onboarding worker state", () => {
+    const client = createClient({
+      companyName: "Worker Onboarding",
+      contactPerson: "Ona Shah",
+      email: "ona@example.com",
+      jurisdiction: "India",
+      serviceTier: "Starter",
+      clientType: "Startup"
+    });
+
+    initializeOnboardingState(
+      testEvent("client.created", {
+        clientId: client.id,
+        companyName: client.name,
+        createdBy: "user@example.com",
+        plan: "starter"
+      })
+    );
+    updateOnboardingProgress(
+      testEvent(
+        "document.uploaded",
+        {
+          clientId: client.id,
+          documentId: "doc-worker-onboarding",
+          fileName: "passport.pdf",
+          uploadedBy: "user@example.com"
+        },
+        { stepKey: "identity", uploadedAt: new Date().toISOString() }
+      )
+    );
+
+    const progress = getOnboardingProgress(client.id);
+    assert.equal(progress?.progressPercent, 20);
+    assert.equal(progress?.overallStatus, "in_progress");
+    assert.equal(progress?.steps[0]?.status, "completed");
   });
 });
 
@@ -433,4 +635,22 @@ class CapturingEventBus implements EventBus {
   async close(): Promise<void> {
     return undefined;
   }
+}
+
+function testEvent<N extends EventName>(
+  name: N,
+  payload: EventPayload<N>,
+  metadata?: Record<string, unknown>
+): EventEnvelope<N> {
+  return {
+    id: `event-${name}`,
+    name,
+    version: 1,
+    occurredAt: new Date().toISOString(),
+    producer: "test",
+    correlationId: "req-test-worker",
+    idempotencyKey: `${name}:test`,
+    payload,
+    metadata
+  };
 }

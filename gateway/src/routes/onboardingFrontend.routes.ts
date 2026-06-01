@@ -1,4 +1,5 @@
 import { Router } from "express";
+import type { EventBus } from "@ai-platform/events";
 import { z } from "zod";
 import { authenticate, requireRoles } from "../middleware/auth";
 import {
@@ -15,7 +16,7 @@ const uploadSchema = z.object({
   fileName: z.string().min(1).optional()
 });
 
-export function onboardingFrontendRoutes(): Router {
+export function onboardingFrontendRoutes(eventBus: EventBus): Router {
   const router = Router();
 
   router.use(authenticate, requireRoles(["admin", "user"]));
@@ -50,7 +51,7 @@ export function onboardingFrontendRoutes(): Router {
     res.json(listDocuments(req.params.clientId, parsedStep.success ? parsedStep.data : undefined));
   });
 
-  router.post("/api/onboarding/:clientId/documents/upload", (req, res, next) => {
+  router.post("/api/onboarding/:clientId/documents/upload", async (req, res, next) => {
     try {
       if (!getClient(req.params.clientId)) {
         res.status(404).json({
@@ -63,6 +64,28 @@ export function onboardingFrontendRoutes(): Router {
 
       const body = uploadSchema.parse(req.body ?? {});
       const document = addDocument(req.params.clientId, body.stepKey, body.fileName);
+      await eventBus.publish(
+        "document.uploaded",
+        {
+          clientId: document.clientId,
+          documentId: document.id,
+          fileName: document.fileName,
+          uploadedBy: req.user?.id ?? "api-gateway"
+        },
+        {
+          correlationId: req.requestId,
+          idempotencyKey: `document-uploaded-${document.id}`,
+          targets: ["crm-service", "onboarding-service"],
+          metadata: {
+            route: req.originalUrl,
+            userId: req.user?.id,
+            stepKey: document.stepKey,
+            uploadedAt: document.uploadedAt,
+            fileSize: document.fileSize,
+            mimeType: document.mimeType
+          }
+        }
+      );
       res.status(201).json({ document });
     } catch (error) {
       next(error);

@@ -180,6 +180,24 @@ export function getClient(clientId: string): ClientSummary | undefined {
   return clients.find((client) => client.id === clientId);
 }
 
+export function updateClientOnboardingState(
+  clientId: string,
+  updates: {
+    status?: OnboardingStatus;
+    progressPercent?: number;
+    updatedAt?: string;
+  }
+): ClientSummary | undefined {
+  const client = getClient(clientId);
+  if (!client) return undefined;
+
+  client.status = updates.status ?? client.status;
+  client.progressPercent = updates.progressPercent ?? client.progressPercent;
+  client.updatedAt = updates.updatedAt ?? now();
+
+  return client;
+}
+
 export function createClient(input: CreateClientInput): ClientSummary {
   const client: ClientSummary = {
     id: `client-${randomUUID().slice(0, 8)}`,

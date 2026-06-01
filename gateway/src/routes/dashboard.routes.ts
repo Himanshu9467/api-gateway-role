@@ -1,4 +1,5 @@
 import { Router } from "express";
+import type { EventBus } from "@ai-platform/events";
 import { z } from "zod";
 import { authenticate, requireRoles } from "../middleware/auth";
 import {
@@ -18,7 +19,7 @@ const createClientSchema = z.object({
   clientType: z.enum(["Corporate", "SME", "Startup", "Individual"])
 });
 
-export function dashboardRoutes(): Router {
+export function dashboardRoutes(eventBus: EventBus): Router {
   const router = Router();
 
   router.use(authenticate, requireRoles(["admin", "user"]));
@@ -49,10 +50,33 @@ export function dashboardRoutes(): Router {
     res.json(client);
   });
 
-  router.post("/api/clients", (req, res, next) => {
+  router.post("/api/clients", async (req, res, next) => {
     try {
       const body = createClientSchema.parse(req.body);
       const client = createClient(body);
+      await eventBus.publish(
+        "client.created",
+        {
+          clientId: client.id,
+          companyName: client.name,
+          createdBy: req.user?.id ?? "api-gateway",
+          plan: serviceTierToPlan(client.serviceTier)
+        },
+        {
+          correlationId: req.requestId,
+          idempotencyKey: `client-created-${client.id}`,
+          targets: ["crm-service", "data-room-service", "onboarding-service"],
+          metadata: {
+            route: req.originalUrl,
+            userId: req.user?.id,
+            contactPerson: client.contactPerson,
+            contactEmail: client.contactEmail,
+            jurisdiction: client.jurisdiction,
+            clientType: client.clientType,
+            serviceTier: client.serviceTier
+          }
+        }
+      );
       res.status(201).json(client);
     } catch (error) {
       next(error);
@@ -60,4 +84,10 @@ export function dashboardRoutes(): Router {
   });
 
   return router;
+}
+
+function serviceTierToPlan(serviceTier: "Starter" | "Professional" | "Enterprise"): "starter" | "growth" | "enterprise" {
+  if (serviceTier === "Starter") return "starter";
+  if (serviceTier === "Enterprise") return "enterprise";
+  return "growth";
 }

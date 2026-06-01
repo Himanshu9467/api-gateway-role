@@ -1,9 +1,14 @@
 import { startExampleSubscribers } from "./createSubscriber";
+import {
+  initializeOnboardingState,
+  updateOnboardingProgress
+} from "../services/onboardingState.service";
 
 void startExampleSubscribers("onboarding-service", [
   {
     eventName: "client.created",
     handler: async (event) => {
+      const state = initializeOnboardingState(event);
       console.log(
         JSON.stringify({
           timestamp: new Date().toISOString(),
@@ -14,6 +19,8 @@ void startExampleSubscribers("onboarding-service", [
           eventId: event.id,
           clientId: event.payload.clientId,
           companyName: event.payload.companyName,
+          progressPercent: state.progressPercent,
+          onboardingStatus: state.status,
           correlationId: event.correlationId
         })
       );
@@ -22,6 +29,7 @@ void startExampleSubscribers("onboarding-service", [
   {
     eventName: "document.uploaded",
     handler: async (event) => {
+      const state = updateOnboardingProgress(event);
       console.log(
         JSON.stringify({
           timestamp: new Date().toISOString(),
@@ -33,6 +41,8 @@ void startExampleSubscribers("onboarding-service", [
           clientId: event.payload.clientId,
           documentId: event.payload.documentId,
           fileName: event.payload.fileName,
+          progressPercent: state.progressPercent,
+          onboardingStatus: state.status,
           correlationId: event.correlationId
         })
       );
