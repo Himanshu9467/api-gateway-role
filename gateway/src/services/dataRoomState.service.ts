@@ -1,4 +1,5 @@
 import type { EventEnvelope } from "@ai-platform/events";
+import { prisma } from "./database.service";
 
 export interface DataRoomMetadata {
   roomId: string;
@@ -6,22 +7,59 @@ export interface DataRoomMetadata {
   createdAt: string;
 }
 
-const roomsByClient = new Map<string, DataRoomMetadata>();
+export async function provisionDataRoom(
+  event: EventEnvelope<"client.created">
+): Promise<DataRoomMetadata> {
+  await ensureEventClient(event);
+  const room = await prisma.dataRoom.upsert({
+    where: { clientId: event.payload.clientId },
+    create: {
+      roomId: `room-${event.payload.clientId}`,
+      clientId: event.payload.clientId,
+      createdAt: new Date()
+    },
+    update: {}
+  });
 
-export function provisionDataRoom(event: EventEnvelope<"client.created">): DataRoomMetadata {
-  const existing = roomsByClient.get(event.payload.clientId);
-  if (existing) return existing;
-
-  const room: DataRoomMetadata = {
-    roomId: `room-${event.payload.clientId}`,
-    clientId: event.payload.clientId,
-    createdAt: new Date().toISOString()
+  return {
+    roomId: room.roomId,
+    clientId: room.clientId,
+    createdAt: room.createdAt.toISOString()
   };
-
-  roomsByClient.set(room.clientId, room);
-  return room;
 }
 
-export function getDataRoom(clientId: string): DataRoomMetadata | undefined {
-  return roomsByClient.get(clientId);
+async function ensureEventClient(event: EventEnvelope<"client.created">): Promise<void> {
+  await prisma.client.upsert({
+    where: { id: event.payload.clientId },
+    create: {
+      id: event.payload.clientId,
+      name: event.payload.companyName,
+      contactPerson: "Unknown",
+      contactEmail: "unknown@example.com",
+      jurisdiction: "Unknown",
+      serviceTier: planToServiceTier(event.payload.plan),
+      clientType: "Corporate",
+      status: "pending",
+      progressPercent: 0,
+      updatedAt: new Date()
+    },
+    update: {}
+  });
+}
+
+function planToServiceTier(plan: string): string {
+  if (plan === "starter") return "Starter";
+  if (plan === "enterprise") return "Enterprise";
+  return "Professional";
+}
+
+export async function getDataRoom(clientId: string): Promise<DataRoomMetadata | undefined> {
+  const room = await prisma.dataRoom.findUnique({ where: { clientId } });
+  return room
+    ? {
+        roomId: room.roomId,
+        clientId: room.clientId,
+        createdAt: room.createdAt.toISOString()
+      }
+    : undefined;
 }

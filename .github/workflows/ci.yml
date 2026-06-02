@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: ai_platform
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ai_platform"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ai_platform?schema=public
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: ci-only-change-this-secret-32-characters
+      SERVICE_API_KEYS: crm-service:crm-ci-key,onboarding-service:onboarding-ci-key,data-room-service:data-room-ci-key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma validate --schema prisma/schema.prisma
+      - run: npm run prisma:generate
+      - run: npm run build
+      - run: npm test
+      - name: Security scan
+        run: npm audit --audit-level=high
+      - name: Docker build
+        run: |
+          docker build -f gateway/Dockerfile -t ai-platform/gateway:${{ github.sha }} .
+          docker save ai-platform/gateway:${{ github.sha }} -o gateway-image.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gateway-image
+          path: gateway-image.tar

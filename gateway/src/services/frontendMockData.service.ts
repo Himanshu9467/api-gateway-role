@@ -1,4 +1,7 @@
 import { randomUUID } from "crypto";
+import { appMetrics } from "../observability/appMetrics";
+import { prisma } from "./database.service";
+import { getStorageProvider } from "./storage";
 
 export type OnboardingStatus = "pending" | "in_progress" | "blocked" | "completed";
 export type ServiceTier = "Starter" | "Professional" | "Enterprise";
@@ -81,151 +84,111 @@ export interface ChatMessage {
   createdAt: string;
 }
 
-const now = () => new Date().toISOString();
+export async function getDashboardSummary(): Promise<DashboardSummary> {
+  const [totalClients, completedOnboarding, inProgressOnboarding, blockedOnboarding] =
+    await Promise.all([
+      prisma.client.count(),
+      prisma.client.count({ where: { status: "completed" } }),
+      prisma.client.count({ where: { status: "in_progress" } }),
+      prisma.client.count({ where: { status: "blocked" } })
+    ]);
 
-const clients: ClientSummary[] = [
-  {
-    id: "client-001",
-    name: "Acme Holdings",
-    contactPerson: "Anita Rao",
-    contactEmail: "anita.rao@acmeholdings.com",
-    jurisdiction: "Singapore",
-    serviceTier: "Enterprise",
-    clientType: "Corporate",
-    status: "in_progress",
-    progressPercent: 48,
-    updatedAt: now()
-  },
-  {
-    id: "client-002",
-    name: "BluePeak Capital",
-    contactPerson: "Omar Khan",
-    contactEmail: "omar.khan@bluepeakcapital.com",
-    jurisdiction: "UAE",
-    serviceTier: "Professional",
-    clientType: "SME",
-    status: "blocked",
-    progressPercent: 62,
-    updatedAt: now()
-  },
-  {
-    id: "client-003",
-    name: "Nexa Labs",
-    contactPerson: "Priya Menon",
-    contactEmail: "priya.menon@nexalabs.com",
-    jurisdiction: "India",
-    serviceTier: "Starter",
-    clientType: "Startup",
-    status: "completed",
-    progressPercent: 100,
-    updatedAt: now()
-  }
-];
-
-const activities: ActivityItem[] = [
-  {
-    id: "act-1",
-    title: "Document uploaded",
-    description: "Acme Holdings uploaded passport verification.",
-    createdAt: now(),
-    type: "upload"
-  },
-  {
-    id: "act-2",
-    title: "Workflow blocked",
-    description: "BluePeak Capital is missing compliance declaration.",
-    createdAt: now(),
-    type: "status_change"
-  }
-];
-
-const documentsByClient = new Map<string, OnboardingDocument[]>([
-  [
-    "client-001",
-    [
-      {
-        id: "doc-1",
-        clientId: "client-001",
-        stepKey: "identity",
-        fileName: "passport.pdf",
-        fileSize: 1_200_000,
-        mimeType: "application/pdf",
-        status: "uploaded",
-        uploadedAt: now()
-      }
-    ]
-  ]
-]);
-
-const chatByClientStep = new Map<string, ChatMessage[]>();
-
-export function getDashboardSummary(): DashboardSummary {
   return {
-    totalClients: clients.length,
-    completedOnboarding: clients.filter((client) => client.status === "completed").length,
-    inProgressOnboarding: clients.filter((client) => client.status === "in_progress").length,
-    blockedOnboarding: clients.filter((client) => client.status === "blocked").length
+    totalClients,
+    completedOnboarding,
+    inProgressOnboarding,
+    blockedOnboarding
   };
 }
 
-export function listClients(): ClientSummary[] {
-  return clients;
+export async function listClients(): Promise<ClientSummary[]> {
+  const clients = await prisma.client.findMany({
+    orderBy: { updatedAt: "desc" }
+  });
+  return clients.map(toClientSummary);
 }
 
-export function listActivity(): ActivityItem[] {
-  return activities;
+export async function listActivity(): Promise<ActivityItem[]> {
+  const activities = await prisma.activity.findMany({
+    orderBy: { createdAt: "desc" }
+  });
+  return activities.map((activity: {
+    id: string;
+    title: string;
+    description: string;
+    createdAt: Date;
+    type: string;
+  }) => ({
+    id: activity.id,
+    title: activity.title,
+    description: activity.description,
+    createdAt: activity.createdAt.toISOString(),
+    type: activity.type as ActivityItem["type"]
+  }));
 }
 
-export function getClient(clientId: string): ClientSummary | undefined {
-  return clients.find((client) => client.id === clientId);
+export async function getClient(clientId: string): Promise<ClientSummary | undefined> {
+  const client = await prisma.client.findUnique({ where: { id: clientId } });
+  return client ? toClientSummary(client) : undefined;
 }
 
-export function updateClientOnboardingState(
+export async function updateClientOnboardingState(
   clientId: string,
   updates: {
     status?: OnboardingStatus;
     progressPercent?: number;
     updatedAt?: string;
   }
-): ClientSummary | undefined {
-  const client = getClient(clientId);
-  if (!client) return undefined;
+): Promise<ClientSummary | undefined> {
+  const existing = await prisma.client.findUnique({ where: { id: clientId } });
+  if (!existing) return undefined;
 
-  client.status = updates.status ?? client.status;
-  client.progressPercent = updates.progressPercent ?? client.progressPercent;
-  client.updatedAt = updates.updatedAt ?? now();
-
-  return client;
-}
-
-export function createClient(input: CreateClientInput): ClientSummary {
-  const client: ClientSummary = {
-    id: `client-${randomUUID().slice(0, 8)}`,
-    name: input.companyName,
-    contactPerson: input.contactPerson,
-    contactEmail: input.email,
-    jurisdiction: input.jurisdiction,
-    serviceTier: input.serviceTier,
-    clientType: input.clientType,
-    status: "pending",
-    progressPercent: 0,
-    updatedAt: now()
-  };
-
-  clients.unshift(client);
-  activities.unshift({
-    id: `act-${randomUUID().slice(0, 8)}`,
-    title: "Client created",
-    description: `${client.name} was added to onboarding.`,
-    createdAt: client.updatedAt,
-    type: "note"
+  const client = await prisma.client.update({
+    where: { id: clientId },
+    data: {
+      status: updates.status ?? existing.status,
+      progressPercent: updates.progressPercent ?? existing.progressPercent,
+      updatedAt: updates.updatedAt ? new Date(updates.updatedAt) : new Date()
+    }
   });
 
-  return client;
+  return toClientSummary(client);
 }
 
-export function getOnboardingProgress(clientId: string): OnboardingProgress | undefined {
-  const client = getClient(clientId);
+export async function createClient(input: CreateClientInput): Promise<ClientSummary> {
+  const timestamp = new Date();
+  const client = await prisma.client.create({
+    data: {
+      id: `client-${randomUUID().slice(0, 8)}`,
+      name: input.companyName,
+      contactPerson: input.contactPerson,
+      contactEmail: input.email,
+      jurisdiction: input.jurisdiction,
+      serviceTier: input.serviceTier,
+      clientType: input.clientType,
+      status: "pending",
+      progressPercent: 0,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      activities: {
+        create: {
+          id: `act-${randomUUID().slice(0, 8)}`,
+          title: "Client created",
+          description: `${input.companyName} was added to onboarding.`,
+          createdAt: timestamp,
+          type: "note"
+        }
+      }
+    }
+  });
+
+  return toClientSummary(client);
+}
+
+export async function getOnboardingProgress(
+  clientId: string
+): Promise<OnboardingProgress | undefined> {
+  const client = await getClient(clientId);
   if (!client) return undefined;
 
   const currentStep = progressToCurrentStep(client.progressPercent, client.status);
@@ -252,63 +215,141 @@ export function getOnboardingProgress(clientId: string): OnboardingProgress | un
   };
 }
 
-export function listDocuments(clientId: string, stepKey?: WorkflowStepKey): OnboardingDocument[] {
-  const documents = documentsByClient.get(clientId) ?? [];
-  if (!stepKey) return documents;
-  return documents.filter((document) => document.stepKey === stepKey);
+export async function listDocuments(
+  clientId: string,
+  stepKey?: WorkflowStepKey
+): Promise<OnboardingDocument[]> {
+  const documents = await prisma.document.findMany({
+    where: {
+      clientId,
+      ...(stepKey ? { stepKey } : {})
+    },
+    orderBy: { uploadedAt: "desc" }
+  });
+  return documents.map(toOnboardingDocument);
 }
 
-export function addDocument(
+export async function addDocument(
   clientId: string,
   stepKey: WorkflowStepKey,
-  fileName = "uploaded-document.pdf"
-): OnboardingDocument {
-  const document: OnboardingDocument = {
-    id: `doc-${randomUUID().slice(0, 8)}`,
+  fileName = "uploaded-document.pdf",
+  file?: { buffer: Buffer; mimeType: string; size: number }
+): Promise<OnboardingDocument> {
+  const timestamp = new Date();
+  const client = await prisma.client.findUnique({ where: { id: clientId } });
+  const documentId = `doc-${randomUUID().slice(0, 8)}`;
+  const mimeType = file?.mimeType ?? mimeTypeForFile(fileName);
+  const bytes = file?.buffer ?? Buffer.alloc(0);
+  const stored = await getStorageProvider().storeDocument({
     clientId,
-    stepKey,
+    documentId,
     fileName,
-    fileSize: 0,
-    mimeType: "application/octet-stream",
-    status: "uploaded",
-    uploadedAt: now()
-  };
-
-  documentsByClient.set(clientId, [...(documentsByClient.get(clientId) ?? []), document]);
-  activities.unshift({
-    id: `act-${randomUUID().slice(0, 8)}`,
-    title: "Document uploaded",
-    description: `${getClient(clientId)?.name ?? clientId} uploaded ${fileName}.`,
-    createdAt: document.uploadedAt,
-    type: "upload"
+    mimeType,
+    bytes,
+    metadata: { stepKey }
+  });
+  appMetrics.increment("gateway_storage_uploads_total", {
+    provider: stored.provider,
+    status: "success"
+  });
+  const document = await prisma.document.create({
+    data: {
+      id: documentId,
+      clientId,
+      stepKey,
+      fileName,
+      fileSize: stored.size,
+      mimeType: stored.contentType,
+      storageProvider: stored.provider,
+      storagePath: stored.path,
+      documentUrl: stored.url,
+      bucket: stored.bucket,
+      storageKey: stored.key,
+      checksum: stored.checksum,
+      storageMetadata: JSON.stringify(stored.metadata),
+      status: "uploaded",
+      uploadedAt: timestamp
+    }
   });
 
-  return document;
+  await prisma.activity.create({
+    data: {
+      id: `act-${randomUUID().slice(0, 8)}`,
+      clientId,
+      title: "Document uploaded",
+      description: `${client?.name ?? clientId} uploaded ${fileName}.`,
+      createdAt: timestamp,
+      type: "upload"
+    }
+  });
+
+  return toOnboardingDocument(document);
 }
 
-export function listChatMessages(clientId: string, stepKey: string): ChatMessage[] {
-  return chatByClientStep.get(chatKey(clientId, stepKey)) ?? [];
+export async function getDocumentDownload(
+  clientId: string,
+  documentId: string,
+  expiresInSeconds: number
+): Promise<{ url: string; document: OnboardingDocument } | undefined> {
+  const document = await prisma.document.findFirst({
+    where: { id: documentId, clientId }
+  });
+  if (!document) return undefined;
+  const provider = getStorageProvider();
+  const url =
+    (await provider.getDownloadUrl?.({
+      bucket: document.bucket,
+      key: document.storageKey ?? document.storagePath,
+      path: document.storagePath,
+      expiresInSeconds
+    })) ?? document.documentUrl;
+  return { url, document: toOnboardingDocument(document) };
 }
 
-export function addChatExchange(clientId: string, stepKey: string, content: string): ChatMessage {
-  const key = chatKey(clientId, stepKey);
-  const existing = chatByClientStep.get(key) ?? [];
-  const userMessage: ChatMessage = {
-    id: `m-user-${randomUUID().slice(0, 8)}`,
-    role: "user",
-    content,
-    createdAt: now()
-  };
-  const assistantMessage: ChatMessage = {
-    id: `m-ai-${randomUUID().slice(0, 8)}`,
-    role: "assistant",
-    content:
-      "Please upload the required documents listed in this step. If a file was rejected, check file format and expiration details.",
-    createdAt: now()
-  };
+export async function listChatMessages(
+  clientId: string,
+  stepKey: string
+): Promise<ChatMessage[]> {
+  const messages = await prisma.chatMessage.findMany({
+    where: { clientId, stepKey },
+    orderBy: { createdAt: "asc" }
+  });
+  return messages.map(toChatMessage);
+}
 
-  chatByClientStep.set(key, [...existing, userMessage, assistantMessage]);
-  return assistantMessage;
+export async function addChatExchange(
+  clientId: string,
+  stepKey: string,
+  content: string
+): Promise<ChatMessage> {
+  const timestamp = new Date();
+  const assistantTimestamp = new Date(timestamp.getTime() + 1);
+  const assistantMessage = await prisma.$transaction(async (tx: typeof prisma) => {
+    await tx.chatMessage.create({
+      data: {
+        id: `m-user-${randomUUID().slice(0, 8)}`,
+        clientId,
+        stepKey,
+        role: "user",
+        content,
+        createdAt: timestamp
+      }
+    });
+
+    return tx.chatMessage.create({
+      data: {
+        id: `m-ai-${randomUUID().slice(0, 8)}`,
+        clientId,
+        stepKey,
+        role: "assistant",
+        content:
+          "Please upload the required documents listed in this step. If a file was rejected, check file format and expiration details.",
+        createdAt: assistantTimestamp
+      }
+    });
+  });
+
+  return toChatMessage(assistantMessage);
 }
 
 export const workflowStepOrder: WorkflowStepKey[] = [
@@ -319,6 +360,79 @@ export const workflowStepOrder: WorkflowStepKey[] = [
   "review"
 ];
 
+function toClientSummary(client: {
+  id: string;
+  name: string;
+  contactPerson: string;
+  contactEmail: string;
+  jurisdiction: string;
+  serviceTier: string;
+  clientType: string;
+  status: string;
+  progressPercent: number;
+  updatedAt: Date;
+}): ClientSummary {
+  return {
+    id: client.id,
+    name: client.name,
+    contactPerson: client.contactPerson,
+    contactEmail: client.contactEmail,
+    jurisdiction: client.jurisdiction,
+    serviceTier: client.serviceTier as ServiceTier,
+    clientType: client.clientType as ClientType,
+    status: client.status as OnboardingStatus,
+    progressPercent: client.progressPercent,
+    updatedAt: client.updatedAt.toISOString()
+  };
+}
+
+function toOnboardingDocument(document: {
+  id: string;
+  clientId: string;
+  stepKey: string;
+  fileName: string;
+  fileSize: number;
+  mimeType: string;
+  status: string;
+  uploadedAt: Date;
+  rejectionReason: string | null;
+}): OnboardingDocument {
+  return {
+    id: document.id,
+    clientId: document.clientId,
+    stepKey: document.stepKey as WorkflowStepKey,
+    fileName: document.fileName,
+    fileSize: document.fileSize,
+    mimeType: document.mimeType,
+    status: document.status as OnboardingDocument["status"],
+    uploadedAt: document.uploadedAt.toISOString(),
+    rejectionReason: document.rejectionReason ?? undefined
+  };
+}
+
+function toChatMessage(message: {
+  id: string;
+  role: string;
+  content: string;
+  createdAt: Date;
+}): ChatMessage {
+  return {
+    id: message.id,
+    role: message.role as ChatMessage["role"],
+    content: message.content,
+    createdAt: message.createdAt.toISOString()
+  };
+}
+
+function mimeTypeForFile(fileName: string): string {
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith(".pdf")) return "application/pdf";
+  if (lower.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  return "application/octet-stream";
+}
+
 function progressToCurrentStep(progressPercent: number, status: OnboardingStatus): WorkflowStepKey {
   if (status === "completed") return "review";
   if (progressPercent >= 80) return "review";
@@ -326,10 +440,6 @@ function progressToCurrentStep(progressPercent: number, status: OnboardingStatus
   if (progressPercent >= 40) return "financial_documents";
   if (progressPercent >= 20) return "company_documents";
   return "identity";
-}
-
-function chatKey(clientId: string, stepKey: string): string {
-  return `${clientId}:${stepKey}`;
 }
 
 const workflowStepLabels: Record<WorkflowStepKey, string> = {

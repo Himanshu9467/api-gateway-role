@@ -11,7 +11,8 @@ export function requestLogger(logger: Logger) {
       route: req.originalUrl,
       ip: req.ip,
       userId: req.userId,
-      correlationId: req.requestId
+      correlationId: req.correlationId ?? req.requestId,
+      traceId: req.traceId
     });
 
     res.on("finish", () => {
@@ -22,7 +23,8 @@ export function requestLogger(logger: Logger) {
         route: req.originalUrl,
         status: res.statusCode,
         latency: Math.round(durationMs),
-        correlationId: req.requestId
+        correlationId: req.correlationId ?? req.requestId,
+        traceId: req.traceId
       });
     });
 

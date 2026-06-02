@@ -9,11 +9,22 @@
   "scripts": {
     "build": "npm run build -w @ai-platform/events && npm run build -w gateway",
     "test": "npm run test -w gateway",
+    "prisma:generate": "prisma generate --schema prisma/schema.prisma",
+    "prisma:migrate": "prisma migrate dev --schema prisma/schema.prisma",
+    "prisma:deploy": "prisma migrate deploy --schema prisma/schema.prisma",
+    "prisma:seed": "prisma db seed --schema prisma/schema.prisma",
+    "prisma:test:prepare": "prisma generate --schema prisma/schema.test.prisma",
     "dev:gateway": "npm run dev -w gateway",
     "start:gateway": "npm run start -w gateway",
     "mock:services": "npm run mock:services -w gateway",
     "worker:crm": "npm run worker:crm -w gateway",
     "worker:onboarding": "npm run worker:onboarding -w gateway",
     "worker:data-room": "npm run worker:data-room -w gateway"
+  },
+  "prisma": {
+    "seed": "npm run prisma:seed -w gateway"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1"
   }
 }

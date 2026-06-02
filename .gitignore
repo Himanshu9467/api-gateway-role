@@ -3,6 +3,14 @@ dist
 .env
 coverage
 *.log
+backups/
+/storage/
+/gateway/storage/
+prisma/test.db
+prisma/test.db-journal
+prisma/test.db-wal
+prisma/test.db-shm
+gateway/src/generated/
 .DS_Store
 .vscode
 frontend/

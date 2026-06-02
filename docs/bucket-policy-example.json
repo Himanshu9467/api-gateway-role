@@ -1,0 +1,49 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyInsecureTransport",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:*",
+      "Resource": [
+        "arn:aws:s3:::YOUR_BUCKET",
+        "arn:aws:s3:::YOUR_BUCKET/*"
+      ],
+      "Condition": {
+        "Bool": {
+          "aws:SecureTransport": "false"
+        }
+      }
+    },
+    {
+      "Sid": "AllowGatewayPrefixAccess",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::YOUR_ACCOUNT_ID:role/YOUR_GATEWAY_ROLE"
+      },
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
+      "Resource": "arn:aws:s3:::YOUR_BUCKET/documents/*"
+    },
+    {
+      "Sid": "AllowGatewayListPrefix",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::YOUR_ACCOUNT_ID:role/YOUR_GATEWAY_ROLE"
+      },
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::YOUR_BUCKET",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "documents",
+            "documents/*"
+          ]
+        }
+      }
+    }
+  ]
+}

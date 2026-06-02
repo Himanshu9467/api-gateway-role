@@ -64,8 +64,6 @@ export class EventSubscriber<N extends EventName> {
       this.options.consumerName
     );
 
-    console.log("FINAL GENERATED QUEUE:", queueName);
-
     this.worker = new Worker<EventEnvelope<N>>(
       queueName,
       async (job) => this.process(job),

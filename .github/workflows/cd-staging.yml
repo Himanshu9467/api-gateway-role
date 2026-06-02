@@ -1,0 +1,37 @@
+name: CD Staging
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+      - name: Terraform plan
+        working-directory: infrastructure/terraform/environments/staging
+        run: terraform init && terraform plan -input=false
+        env:
+          TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+          TF_VAR_image_tag: ${{ github.sha }}
+      - name: Deploy to ECS
+        run: bash scripts/deploy-prod.sh
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          ENVIRONMENT: staging
+          PROJECT: ai-platform
+          IMAGE_TAG: ${{ github.sha }}
+          ECS_SUBNET_IDS: ${{ vars.ECS_SUBNET_IDS }}
+          ECS_SECURITY_GROUP_IDS: ${{ vars.ECS_SECURITY_GROUP_IDS }}
+          HEALTH_URL: ${{ vars.HEALTH_URL }}

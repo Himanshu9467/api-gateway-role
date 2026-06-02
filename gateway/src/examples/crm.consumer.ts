@@ -1,3 +1,4 @@
+import "../observability/tracingBootstrap";
 import { startExampleSubscribers } from "./createSubscriber";
 import { associateCrmDocument, createCrmRecord } from "../services/crmState.service";
 
@@ -5,7 +6,7 @@ void startExampleSubscribers("crm-service", [
   {
     eventName: "client.created",
     handler: async (event) => {
-      const record = createCrmRecord(event);
+      const record = await createCrmRecord(event);
       console.log(
         JSON.stringify({
           timestamp: new Date().toISOString(),
@@ -25,7 +26,7 @@ void startExampleSubscribers("crm-service", [
   {
     eventName: "document.uploaded",
     handler: async (event) => {
-      const record = associateCrmDocument(event);
+      const record = await associateCrmDocument(event);
       console.log(
         JSON.stringify({
           timestamp: new Date().toISOString(),

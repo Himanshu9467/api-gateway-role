@@ -1,0 +1,74 @@
+{
+  "id": null,
+  "uid": "ai-platform-enterprise",
+  "title": "AI Platform Enterprise Readiness",
+  "tags": ["api-gateway", "workers", "audit", "s3"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "API Traffic",
+      "gridPos": { "x": 0, "y": 0, "w": 8, "h": 6 },
+      "targets": [{ "expr": "sum by (route, method) (rate(gateway_http_requests_total[5m]))", "legendFormat": "{{method}} {{route}}" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Error Rate",
+      "gridPos": { "x": 8, "y": 0, "w": 8, "h": 6 },
+      "targets": [{ "expr": "sum(rate(gateway_http_errors_total[5m])) / clamp_min(sum(rate(gateway_http_requests_total[5m])), 1)", "legendFormat": "error ratio" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Authentication Metrics",
+      "gridPos": { "x": 16, "y": 0, "w": 8, "h": 6 },
+      "targets": [
+        { "expr": "sum(rate(gateway_auth_failures_total[5m]))", "legendFormat": "auth failures" },
+        { "expr": "sum(rate(gateway_auth_password_reset_requests_total[5m]))", "legendFormat": "password reset requests" },
+        { "expr": "sum(rate(gateway_auth_password_resets_total[5m]))", "legendFormat": "password resets" },
+        { "expr": "sum(rate(gateway_auth_email_verifications_total[5m]))", "legendFormat": "email verifications" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Audit Log Activity",
+      "gridPos": { "x": 0, "y": 6, "w": 8, "h": 6 },
+      "targets": [{ "expr": "sum by (action) (rate(gateway_audit_logs_total[5m]))", "legendFormat": "{{action}}" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Worker Throughput",
+      "gridPos": { "x": 8, "y": 6, "w": 8, "h": 6 },
+      "targets": [
+        { "expr": "sum by (worker, status) (rate(gateway_worker_jobs_total[5m]))", "legendFormat": "{{worker}} {{status}}" },
+        { "expr": "sum(rate(gateway_events_consumed_total[5m]))", "legendFormat": "events consumed" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Queue Depth",
+      "gridPos": { "x": 16, "y": 6, "w": 8, "h": 6 },
+      "targets": [{ "expr": "sum by (queue) (gateway_queue_depth)", "legendFormat": "{{queue}}" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "DLQ Metrics",
+      "gridPos": { "x": 0, "y": 12, "w": 8, "h": 6 },
+      "targets": [{ "expr": "sum by (queue) (gateway_dlq_depth)", "legendFormat": "{{queue}}" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Database Activity",
+      "gridPos": { "x": 8, "y": 12, "w": 8, "h": 6 },
+      "targets": [{ "expr": "sum by (model, operation) (rate(gateway_db_queries_total[5m]))", "legendFormat": "{{model}} {{operation}}" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "S3 Upload Activity",
+      "gridPos": { "x": 16, "y": 12, "w": 8, "h": 6 },
+      "targets": [{ "expr": "sum by (provider, status) (rate(gateway_storage_uploads_total[5m]))", "legendFormat": "{{provider}} {{status}}" }]
+    }
+  ]
+}

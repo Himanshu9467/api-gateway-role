@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
+import { appMetrics } from "./appMetrics";
 
 interface RouteMetric {
   count: number;
@@ -45,7 +46,44 @@ export class MetricsRegistry {
       lines.push(`gateway_http_request_duration_ms_sum${labels} ${Math.round(metric.totalDurationMs)}`);
     }
 
+    lines.push(
+      "# HELP gateway_http_errors_total Total HTTP responses with status code >= 400.",
+      "# TYPE gateway_http_errors_total counter",
+      "# HELP gateway_auth_failures_total Total authentication and authorization failures.",
+      "# TYPE gateway_auth_failures_total counter",
+      "# HELP gateway_events_published_total Total events published by the gateway.",
+      "# TYPE gateway_events_published_total counter",
+      "# HELP gateway_events_consumed_total Total events consumed by workers in this process.",
+      "# TYPE gateway_events_consumed_total counter",
+      "# HELP gateway_db_queries_total Total Prisma queries observed by the gateway process.",
+      "# TYPE gateway_db_queries_total counter",
+      "# HELP gateway_worker_jobs_total Total worker jobs processed by workers in this process.",
+      "# TYPE gateway_worker_jobs_total counter"
+    );
+
+    const additionalCounters = appMetrics.renderCounters();
+    if (additionalCounters) {
+      lines.push(additionalCounters);
+    }
+
     return `${lines.join("\n")}\n`;
+  }
+
+  snapshot(): { requests: number; errors: number; averageLatencyMs: number } {
+    let requests = 0;
+    let errors = 0;
+    let duration = 0;
+    for (const [key, metric] of this.httpRequests) {
+      const statusCode = Number(key.split(" ")[2]);
+      requests += metric.count;
+      duration += metric.totalDurationMs;
+      if (statusCode >= 500) errors += metric.count;
+    }
+    return {
+      requests,
+      errors,
+      averageLatencyMs: requests > 0 ? duration / requests : 0
+    };
   }
 
   private key(method: string, route: string, statusCode: number): string {
@@ -65,6 +103,13 @@ export function metricsMiddleware(metrics: MetricsRegistry) {
     res.on("finish", () => {
       const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
       metrics.recordHttpRequest(req.method, req.route?.path?.toString() ?? req.path, res.statusCode, durationMs);
+      if (res.statusCode >= 400) {
+        appMetrics.increment("gateway_http_errors_total", {
+          method: req.method,
+          route: req.route?.path?.toString() ?? req.path,
+          status: res.statusCode
+        });
+      }
     });
 
     next();

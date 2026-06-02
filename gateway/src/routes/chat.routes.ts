@@ -14,16 +14,20 @@ export function chatRoutes(): Router {
 
   router.use(authenticate, requireRoles(["admin", "user"]));
 
-  router.get("/api/ai/chat/messages", (req, res) => {
-    const clientId = String(req.query.clientId ?? "");
-    const stepKey = String(req.query.stepKey ?? "");
-    res.json(listChatMessages(clientId, stepKey));
+  router.get("/api/ai/chat/messages", async (req, res, next) => {
+    try {
+      const clientId = String(req.query.clientId ?? "");
+      const stepKey = String(req.query.stepKey ?? "");
+      res.json(await listChatMessages(clientId, stepKey));
+    } catch (error) {
+      next(error);
+    }
   });
 
-  router.post("/api/ai/chat", (req, res, next) => {
+  router.post("/api/ai/chat", async (req, res, next) => {
     try {
       const body = chatRequestSchema.parse(req.body);
-      const message = addChatExchange(body.clientId, body.stepKey, body.message);
+      const message = await addChatExchange(body.clientId, body.stepKey, body.message);
 
       res.json({
         message,

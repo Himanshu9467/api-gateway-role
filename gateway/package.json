@@ -8,7 +8,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
-    "test": "node --test -r ts-node/register src/__tests__/gateway.integration.test.ts",
+    "test": "prisma generate --schema ../prisma/schema.test.prisma && node --test -r ts-node/register -r ./src/__tests__/testEnv.js src/__tests__/gateway.integration.test.ts",
+    "prisma:seed": "node -r ts-node/register/transpile-only ../prisma/seed.ts",
     "start": "node dist/index.js",
     "worker:crm": "ts-node-dev --respawn --transpile-only src/examples/crm.consumer.ts",
     "worker:onboarding": "ts-node-dev --respawn --transpile-only src/examples/onboarding.consumer.ts",
@@ -17,20 +18,36 @@
   },
   "dependencies": {
     "@ai-platform/events": "file:../packages/events",
+    "@aws-sdk/client-s3": "^3.1058.0",
+    "@aws-sdk/client-secrets-manager": "^3.1058.0",
+    "@aws-sdk/s3-request-presigner": "^3.1058.0",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/auto-instrumentations-node": "^0.76.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.218.0",
+    "@opentelemetry/sdk-node": "^0.218.0",
+    "@prisma/client": "^5.22.0",
+    "@prisma/instrumentation": "^5.22.0",
+    "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "helmet": "^8.1.0",
     "http-proxy-middleware": "^3.0.5",
     "jsonwebtoken": "^9.0.2",
+    "multer": "^2.1.1",
     "zod": "^4.2.1"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
+    "@types/multer": "^2.1.0",
     "@types/node": "^25.6.0",
+    "prisma": "^5.22.0",
     "ts-node-dev": "^2.0.0",
     "typescript": "^6.0.3"
+  },
+  "prisma": {
+    "seed": "node -r ts-node/register/transpile-only ../prisma/seed.ts"
   }
 }

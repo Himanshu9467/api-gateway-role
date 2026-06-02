@@ -1,0 +1,2 @@
+db_password = "replace-with-a-strong-database-password"
+image_tag   = "staging"

@@ -1,6 +1,8 @@
 import { randomUUID } from "crypto";
 import type { EventBus, EventEnvelope } from "@ai-platform/events";
+import { appMetrics } from "../../observability/appMetrics";
 import type { Logger } from "../../observability/logger";
+import { withTraceMetadata } from "../../observability/tracing";
 import type { ParsedCommand } from "../parser/commandParser";
 
 interface WorkflowContext {
@@ -62,15 +64,18 @@ export class OnboardClientWorkflow {
         correlationId: context.requestId,
         idempotencyKey: `client.created:${context.clientId}`,
         targets: ["crm-service", "data-room-service", "onboarding-service"],
-        metadata: {
-          traceId: context.requestId,
+        metadata: withTraceMetadata({
           commandIntent: "onboard_client",
           ...context.metadata
-        }
+        })
       }
     );
 
     this.logStep("workflow.onboard_client.client_created_published", context, event);
+    appMetrics.increment("gateway_events_published_total", {
+      event: event.name,
+      producer: "gateway"
+    });
     return event;
   }
 

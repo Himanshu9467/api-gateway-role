@@ -1,3 +1,4 @@
+import "../observability/tracingBootstrap";
 import { startExampleSubscribers } from "./createSubscriber";
 import {
   initializeOnboardingState,
@@ -8,7 +9,7 @@ void startExampleSubscribers("onboarding-service", [
   {
     eventName: "client.created",
     handler: async (event) => {
-      const state = initializeOnboardingState(event);
+      const state = await initializeOnboardingState(event);
       console.log(
         JSON.stringify({
           timestamp: new Date().toISOString(),
@@ -29,7 +30,7 @@ void startExampleSubscribers("onboarding-service", [
   {
     eventName: "document.uploaded",
     handler: async (event) => {
-      const state = updateOnboardingProgress(event);
+      const state = await updateOnboardingProgress(event);
       console.log(
         JSON.stringify({
           timestamp: new Date().toISOString(),

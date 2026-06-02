@@ -1,3 +1,4 @@
+import "./observability/tracingBootstrap";
 import cors from "cors";
 import express from "express";
 import helmet from "helmet";
@@ -16,6 +17,7 @@ import { AiOrchestrator } from "./orchestrator/commands/orchestrator";
 import { OnboardClientWorkflow } from "./orchestrator/workflows/onboardClient.workflow";
 import { Logger } from "./observability/logger";
 import { MetricsRegistry, metricsMiddleware } from "./observability/metrics";
+import { traceMiddleware } from "./observability/tracing";
 import { docsRoutes } from "./routes/docs.routes";
 import { healthRoutes } from "./routes/health.routes";
 import { eventRoutes } from "./routes/event.routes";
@@ -29,17 +31,41 @@ import { CircuitBreakerService } from "./services/circuitBreaker.service";
 import { HealthService } from "./services/health.service";
 import { registerProxyRoutes } from "./services/proxy.service";
 import { ServiceRegistry } from "./services/serviceRegistry.service";
+import { sendAlert } from "./services/alerting.service";
+import { prisma } from "./services/database.service";
+import { validateAwsStorageStartup } from "./services/awsValidation.service";
+import { validateStartupSecrets } from "./services/secrets.service";
 import { requestIdMiddleware } from "./utils/requestId";
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger(env.SERVICE_NAME);
+  await validateStartupSecrets();
+  await validateAwsStorageStartup();
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+  } catch (error) {
+    await sendAlert({
+      name: "database.connectivity_failed",
+      severity: "critical",
+      message: error instanceof Error ? error.message : "Database connectivity check failed"
+    });
+    throw error;
+  }
   const metrics = new MetricsRegistry();
   const redis = env.EVENT_DRIVER === "redis" ? createRedisConnection({ url: env.REDIS_URL }) : undefined;
   redis?.on("error", (error) => {
     logger.error("redis.connection.error", {
       error: error.message || error.name || "Redis connection failed"
     });
+    void sendAlert({
+      name: "redis.failure",
+      severity: "critical",
+      message: error.message || error.name || "Redis connection failed"
+    });
   });
+  if (env.NODE_ENV === "production" && redis) {
+    await redis.ping();
+  }
   const eventBus = createEventBus({
     driver: env.EVENT_DRIVER,
     serviceName: env.SERVICE_NAME,
@@ -66,6 +92,7 @@ async function bootstrap(): Promise<void> {
   app.use(cors());
   app.use(express.json({ limit: "1mb" }));
   app.use(requestIdMiddleware);
+  app.use(traceMiddleware);
   app.use(metricsMiddleware(metrics));
   app.use(requestLogger(logger));
   app.use(

@@ -1,16 +1,32 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ai_platform
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ai_platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "6379:6379"
     volumes:
-      - redis-data:/data
+      - redis_data:/data
+    command: ["redis-server", "--appendonly", "yes"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
-      timeout: 3s
-      retries: 20
+      timeout: 5s
+      retries: 10
 
   gateway:
     build:
@@ -20,14 +36,84 @@ services:
       NODE_ENV: production
       PORT: 4000
       REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ai_platform?schema=public
+      JWT_SECRET: ${JWT_SECRET:-change-me-to-a-32-plus-character-random-secret}
+      SERVICE_API_KEYS: ${SERVICE_API_KEYS:-}
       CRM_SERVICE_URL: http://host.docker.internal:3003
       ONBOARDING_SERVICE_URL: http://host.docker.internal:3002
       DATA_ROOM_SERVICE_URL: http://host.docker.internal:3001
+      STORAGE_PROVIDER: ${STORAGE_PROVIDER:-local}
+      LOCAL_STORAGE_DIR: storage/documents
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_REGION: ${S3_REGION:-}
+      S3_PREFIX: ${S3_PREFIX:-documents}
+      ALERT_PROVIDER: ${ALERT_PROVIDER:-console}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-console}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      EMAIL_FROM: ${EMAIL_FROM:-no-reply@example.com}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:4000}
+      SES_REGION: ${SES_REGION:-}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      ALERT_HIGH_ERROR_RATE_THRESHOLD: ${ALERT_HIGH_ERROR_RATE_THRESHOLD:-0.05}
+      ALERT_HIGH_LATENCY_MS: ${ALERT_HIGH_LATENCY_MS:-1000}
+      SECRET_PROVIDER: ${SECRET_PROVIDER:-env}
+      AWS_SECRETS_REGION: ${AWS_SECRETS_REGION:-}
+      AWS_SECRETS_JSON_ID: ${AWS_SECRETS_JSON_ID:-}
+      TRACING_ENABLED: ${TRACING_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
     ports:
       - "4000:4000"
+    volumes:
+      - gateway_storage:/app/storage
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
 
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    profiles:
+      - tracing
+    ports:
+      - "16686:16686"
+      - "4318:4318"
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    profiles:
+      - observability
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - gateway
+
+  grafana:
+    image: grafana/grafana:11.2.2
+    profiles:
+      - observability
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
 volumes:
-  redis-data:
+  postgres_data:
+  redis_data:
+  gateway_storage:
+  grafana_data:

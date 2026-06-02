@@ -1,0 +1,215 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Client {
+  id              String              @id
+  name            String
+  contactPerson   String
+  contactEmail    String
+  jurisdiction    String
+  serviceTier     String
+  clientType      String
+  status          String
+  progressPercent Int                 @default(0)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  documents       Document[]
+  activities      Activity[]
+  chatMessages    ChatMessage[]
+  onboarding      OnboardingProgress?
+  crmRecord       CRMRecord?
+  dataRoom        DataRoom?
+  auditLogs       AuditLog[]
+
+  @@index([status, updatedAt])
+  @@index([updatedAt])
+}
+
+model User {
+  id                      String                   @id
+  email                   String                   @unique
+  name                    String
+  passwordHash            String
+  roles                   String                   @default("user")
+  emailVerifiedAt         DateTime?
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
+  refreshTokens           RefreshToken[]
+  passwordResetTokens     PasswordResetToken[]
+  emailVerificationTokens EmailVerificationToken[]
+
+  @@index([email])
+}
+
+model RefreshToken {
+  id         String    @id
+  userId     String
+  tokenHash  String    @unique
+  familyId   String
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  replacedBy String?
+  createdAt  DateTime  @default(now())
+  userAgent  String?
+  ipAddress  String?
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@index([familyId])
+}
+
+model PasswordResetToken {
+  id        String    @id
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  ipAddress String?
+  userAgent String?
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@index([expiresAt])
+}
+
+model EmailVerificationToken {
+  id        String    @id
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  ipAddress String?
+  userAgent String?
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@index([expiresAt])
+}
+
+model Document {
+  id              String   @id
+  clientId        String
+  stepKey         String
+  fileName        String
+  fileSize        Int      @default(0)
+  mimeType        String
+  storageProvider String   @default("local")
+  storagePath     String   @default("")
+  documentUrl     String   @default("")
+  bucket          String?
+  storageKey      String?
+  checksum        String   @default("")
+  storageMetadata String   @default("{}")
+  status          String
+  uploadedAt      DateTime @default(now())
+  rejectionReason String?
+  client          Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([clientId, stepKey, uploadedAt])
+}
+
+model AuditLog {
+  id          String   @id
+  action      String
+  actorId     String?
+  actorType   String   @default("user")
+  clientId    String?
+  documentId  String?
+  ipAddress   String?
+  userAgent   String?
+  metadata    String   @default("{}")
+  createdAt   DateTime @default(now())
+  client      Client?  @relation(fields: [clientId], references: [id], onDelete: SetNull)
+
+  @@index([action, createdAt])
+  @@index([actorId, createdAt])
+  @@index([clientId, createdAt])
+  @@index([documentId, createdAt])
+}
+
+model Activity {
+  id          String   @id
+  clientId    String?
+  title       String
+  description String
+  createdAt   DateTime @default(now())
+  type        String
+  client      Client?  @relation(fields: [clientId], references: [id], onDelete: SetNull)
+
+  @@index([clientId, createdAt])
+  @@index([createdAt])
+}
+
+model ChatMessage {
+  id        String   @id
+  clientId  String
+  stepKey   String
+  role      String
+  content   String
+  createdAt DateTime @default(now())
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([clientId, stepKey, createdAt])
+}
+
+model OnboardingProgress {
+  id              String                    @id
+  clientId        String                    @unique
+  status          String
+  progressPercent Int                       @default(0)
+  currentStep     String                    @default("identity")
+  startedAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
+  client          Client                    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  completedSteps  OnboardingCompletedStep[]
+}
+
+model OnboardingCompletedStep {
+  id         String             @id
+  progressId String
+  stepKey    String
+  completedAt DateTime          @default(now())
+  progress   OnboardingProgress @relation(fields: [progressId], references: [id], onDelete: Cascade)
+
+  @@unique([progressId, stepKey])
+}
+
+model CRMRecord {
+  crmId       String                   @id
+  clientId    String                   @unique
+  companyName String
+  plan        String
+  createdBy   String
+  createdAt   DateTime                 @default(now())
+  client      Client                   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  documents   CRMDocumentAssociation[]
+}
+
+model CRMDocumentAssociation {
+  id           String    @id
+  crmId        String
+  documentId   String
+  fileName     String
+  uploadedBy   String
+  associatedAt DateTime  @default(now())
+  crmRecord    CRMRecord @relation(fields: [crmId], references: [crmId], onDelete: Cascade)
+
+  @@unique([crmId, documentId])
+}
+
+model DataRoom {
+  roomId    String   @id
+  clientId  String   @unique
+  createdAt DateTime @default(now())
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+}

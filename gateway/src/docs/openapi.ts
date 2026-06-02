@@ -72,6 +72,64 @@ export const openApiDocument = {
         }
       }
     },
+    "/api/auth/forgot-password": {
+      post: {
+        summary: "Request password reset instructions",
+        requestBody: {
+          required: true,
+          content: { "application/json": { example: { email: "user@example.com" } } }
+        },
+        responses: {
+          "202": { description: "Accepted without revealing whether the account exists" },
+          "429": { description: "Rate limit exceeded" }
+        }
+      }
+    },
+    "/api/auth/reset-password": {
+      post: {
+        summary: "Reset password using a one-time token",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              example: { token: "opaque-token-from-email", password: "NewStrong1!" }
+            }
+          }
+        },
+        responses: {
+          "204": { description: "Password reset completed" },
+          "400": { description: "Invalid, expired, or weak reset request" },
+          "429": { description: "Rate limit exceeded" }
+        }
+      }
+    },
+    "/api/auth/verify-email": {
+      post: {
+        summary: "Verify email using a one-time token",
+        requestBody: {
+          required: true,
+          content: { "application/json": { example: { token: "opaque-token-from-email" } } }
+        },
+        responses: {
+          "200": { description: "Email verified" },
+          "400": { description: "Invalid or expired verification token" },
+          "429": { description: "Rate limit exceeded" }
+        }
+      }
+    },
+    "/api/auth/resend-verification": {
+      post: {
+        summary: "Resend email verification instructions",
+        requestBody: {
+          required: true,
+          content: { "application/json": { example: { email: "user@example.com" } } }
+        },
+        responses: {
+          "202": { description: "Accepted without revealing whether the account exists" },
+          "429": { description: "Rate limit exceeded" }
+        }
+      }
+    },
     "/api/events/client-created": {
       post: {
         summary: "Publish client.created event",

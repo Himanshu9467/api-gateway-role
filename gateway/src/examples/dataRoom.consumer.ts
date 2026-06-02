@@ -1,8 +1,9 @@
+import "../observability/tracingBootstrap";
 import { startExampleSubscriber } from "./createSubscriber";
 import { provisionDataRoom } from "../services/dataRoomState.service";
 
 void startExampleSubscriber("data-room-service", "client.created", async (event) => {
-  const room = provisionDataRoom(event);
+  const room = await provisionDataRoom(event);
   console.log(
     JSON.stringify({
       timestamp: new Date().toISOString(),

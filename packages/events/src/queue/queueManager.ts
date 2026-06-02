@@ -16,8 +16,6 @@ export class QueueManager {
       .replace(/:/g, "-")
       .replace(/\./g, "-");
 
-    console.log("Generated Queue Name:", name);
-
     return name;
   }
 

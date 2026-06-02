@@ -3,6 +3,8 @@ import { Router } from "express";
 import type { EventBus } from "@ai-platform/events";
 import { z } from "zod";
 import { authenticate, requireRoles } from "../middleware/auth";
+import { appMetrics } from "../observability/appMetrics";
+import { withTraceMetadata } from "../observability/tracing";
 import type { Logger } from "../observability/logger";
 
 const clientCreatedRequestSchema = z.object({
@@ -48,14 +50,14 @@ export function eventRoutes(eventBus: EventBus, logger: Logger): Router {
             plan: body.plan
           },
           {
-            correlationId: req.requestId,
+            correlationId: req.correlationId ?? req.requestId,
             idempotencyKey: `client-created${clientId}`,
             targets: ["crm-service", "data-room-service"],
-            metadata: {
+            metadata: withTraceMetadata({
               route: req.originalUrl,
               userId: req.user?.id,
               ...body.metadata
-            }
+            })
           }
         );
 
@@ -67,6 +69,10 @@ export function eventRoutes(eventBus: EventBus, logger: Logger): Router {
           status: "queued",
           correlationId: event.correlationId,
           clientId
+        });
+        appMetrics.increment("gateway_events_published_total", {
+          event: event.name,
+          producer: "gateway"
         });
 
         res.status(202).json({
@@ -100,14 +106,14 @@ export function eventRoutes(eventBus: EventBus, logger: Logger): Router {
             uploadedBy: body.uploadedBy
           },
           {
-            correlationId: req.requestId,
+            correlationId: req.correlationId ?? req.requestId,
             idempotencyKey: `document-uploaded-${documentId}`,
             targets: ["crm-service", "onboarding-service"],
-            metadata: {
+            metadata: withTraceMetadata({
               route: req.originalUrl,
               userId: req.user?.id,
               ...body.metadata
-            }
+            })
           }
         );
 
@@ -120,6 +126,10 @@ export function eventRoutes(eventBus: EventBus, logger: Logger): Router {
           correlationId: event.correlationId,
           clientId: body.clientId,
           documentId
+        });
+        appMetrics.increment("gateway_events_published_total", {
+          event: event.name,
+          producer: "gateway"
         });
 
         res.status(202).json({

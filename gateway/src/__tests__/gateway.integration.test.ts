@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { after, describe, it } from "node:test";
+import { after, before, describe, it } from "node:test";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import express from "express";
@@ -37,8 +37,19 @@ import {
   initializeOnboardingState,
   updateOnboardingProgress
 } from "../services/onboardingState.service";
+import { disconnectDatabase, prisma } from "../services/database.service";
+import {
+  createEmailVerificationToken,
+  createPasswordResetToken,
+  hashPassword
+} from "../services/auth.service";
+import { resetTestDatabase } from "./databaseTestSetup";
 
 const servers: Server[] = [];
+
+before(async () => {
+  await resetTestDatabase();
+});
 
 after(async () => {
   await Promise.all(
@@ -49,6 +60,7 @@ after(async () => {
         })
     )
   );
+  await disconnectDatabase();
 });
 
 describe("gateway auth and RBAC", () => {
@@ -144,6 +156,194 @@ describe("gateway auth and RBAC", () => {
     assert.equal(missingAuth.status, 401);
     assert.equal(allowed.status, 202);
   });
+
+  it("verifies bcrypt passwords and rotates refresh tokens", async () => {
+    const baseUrl = await startApp((app) => {
+      app.use(express.json());
+      app.use(requestIdMiddleware);
+      app.use(authRoutes());
+    });
+
+    const weakRegister = await fetch(`${baseUrl}/api/auth/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "weak@example.com", name: "Weak", password: "password" })
+    });
+    assert.equal(weakRegister.status, 400);
+    assert.equal((await weakRegister.json()).error, "weak_password");
+
+    const register = await fetch(`${baseUrl}/api/auth/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        email: "refresh@example.com",
+        name: "Refresh User",
+        password: "Stronger1!"
+      })
+    });
+    assert.equal(register.status, 201);
+
+    const invalidLogin = await fetch(`${baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "refresh@example.com", password: "Wronger1!" })
+    });
+    assert.equal(invalidLogin.status, 401);
+
+    const login = await fetch(`${baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "refresh@example.com", password: "Stronger1!" })
+    });
+    const loginBody = await login.json();
+    assert.equal(login.status, 200);
+    assert.ok(loginBody.token);
+    assert.ok(loginBody.refreshToken);
+
+    const refresh = await fetch(`${baseUrl}/api/auth/refresh`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ refreshToken: loginBody.refreshToken })
+    });
+    const refreshBody = await refresh.json();
+    assert.equal(refresh.status, 200);
+    assert.ok(refreshBody.token);
+    assert.ok(refreshBody.refreshToken);
+    assert.notEqual(refreshBody.refreshToken, loginBody.refreshToken);
+
+    const reused = await fetch(`${baseUrl}/api/auth/refresh`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ refreshToken: loginBody.refreshToken })
+    });
+    assert.equal(reused.status, 401);
+
+    const logout = await fetch(`${baseUrl}/api/auth/logout`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ refreshToken: refreshBody.refreshToken })
+    });
+    assert.equal(logout.status, 204);
+
+    const afterLogout = await fetch(`${baseUrl}/api/auth/refresh`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ refreshToken: refreshBody.refreshToken })
+    });
+    assert.equal(afterLogout.status, 401);
+  });
+
+  it("handles password reset without account enumeration and rejects token replay", async () => {
+    const baseUrl = await startApp((app) => {
+      app.use(express.json());
+      app.use(requestIdMiddleware);
+      app.use(authRoutes());
+    });
+
+    await prisma.user.create({
+      data: {
+        id: "user-password-reset",
+        email: "reset@example.com",
+        name: "Reset User",
+        passwordHash: await hashPassword("OldPass1!"),
+        roles: "user",
+        emailVerifiedAt: new Date()
+      }
+    });
+
+    const forgotExisting = await fetch(`${baseUrl}/api/auth/forgot-password`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "reset@example.com" })
+    });
+    const forgotMissing = await fetch(`${baseUrl}/api/auth/forgot-password`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "missing-reset@example.com" })
+    });
+    assert.equal(forgotExisting.status, 202);
+    assert.equal(forgotMissing.status, 202);
+
+    const stored = await prisma.passwordResetToken.findFirst({
+      where: { userId: "user-password-reset" }
+    });
+    assert.ok(stored);
+    assert.equal(stored?.tokenHash.length, 64);
+
+    const issued = await createPasswordResetToken({ email: "reset@example.com" });
+    assert.ok(issued?.token);
+    const reset = await fetch(`${baseUrl}/api/auth/reset-password`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: issued?.token, password: "NewPass12!" })
+    });
+    assert.equal(reset.status, 204);
+
+    const replay = await fetch(`${baseUrl}/api/auth/reset-password`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: issued?.token, password: "OtherPass1!" })
+    });
+    assert.equal(replay.status, 400);
+
+    const login = await fetch(`${baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "reset@example.com", password: "NewPass12!" })
+    });
+    assert.equal(login.status, 200);
+  });
+
+  it("verifies email tokens, handles resend, and rejects token replay", async () => {
+    const baseUrl = await startApp((app) => {
+      app.use(express.json());
+      app.use(requestIdMiddleware);
+      app.use(authRoutes());
+    });
+
+    await prisma.user.create({
+      data: {
+        id: "user-email-verification",
+        email: "verify@example.com",
+        name: "Verify User",
+        passwordHash: await hashPassword("VerifyPass1!"),
+        roles: "user"
+      }
+    });
+
+    const resend = await fetch(`${baseUrl}/api/auth/resend-verification`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "verify@example.com" })
+    });
+    const resendMissing = await fetch(`${baseUrl}/api/auth/resend-verification`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "missing-verify@example.com" })
+    });
+    assert.equal(resend.status, 202);
+    assert.equal(resendMissing.status, 202);
+
+    const issued = await createEmailVerificationToken({ userId: "user-email-verification" });
+    assert.ok(issued?.token);
+    const verified = await fetch(`${baseUrl}/api/auth/verify-email`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: issued?.token })
+    });
+    assert.equal(verified.status, 200);
+    assert.equal((await verified.json()).user.emailVerified, true);
+
+    const user = await prisma.user.findUnique({ where: { id: "user-email-verification" } });
+    assert.ok(user?.emailVerifiedAt);
+
+    const replay = await fetch(`${baseUrl}/api/auth/verify-email`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: issued?.token })
+    });
+    assert.equal(replay.status, 400);
+  });
 });
 
 describe("gateway rate limiting", () => {
@@ -224,6 +424,7 @@ describe("gateway event routes", () => {
       "crm-service",
       "onboarding-service"
     ]);
+
   });
 });
 
@@ -435,33 +636,88 @@ describe("frontend-facing gateway routes", () => {
       "crm-service",
       "onboarding-service"
     ]);
+
+    const downloadResponse = await fetch(
+      `${baseUrl}/api/onboarding/${client.id}/documents/${upload.document.id}/download-url?expiresIn=120`,
+      { headers: { authorization: `Bearer ${token}` } }
+    );
+    const download = await downloadResponse.json();
+    assert.equal(downloadResponse.status, 200);
+    assert.equal(download.expiresIn, 120);
+    assert.equal(download.document.id, upload.document.id);
+    assert.match(download.url, /^local:\/\//);
+
+    const form = new FormData();
+    form.set("stepKey", "identity");
+    form.set("file", new Blob([Buffer.from("%PDF-1.4\n")], { type: "application/pdf" }), "identity.pdf");
+    const multipartResponse = await fetch(
+      `${baseUrl}/api/onboarding/${client.id}/documents/upload`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: form
+      }
+    );
+    const multipart = await multipartResponse.json();
+    assert.equal(multipartResponse.status, 201);
+    assert.equal(multipart.document.fileName, "identity.pdf");
+    assert.equal(multipart.document.fileSize, 9);
+    assert.equal(multipart.document.mimeType, "application/pdf");
   });
 });
 
 describe("worker business side effects", () => {
-  it("creates CRM records and associates uploaded documents", () => {
+  it("creates CRM records and associates uploaded documents", async () => {
+    await prisma.client.create({
+      data: {
+        id: "client-worker-crm",
+        name: "Worker CRM",
+        contactPerson: "Casey CRM",
+        contactEmail: "casey.crm@example.com",
+        jurisdiction: "India",
+        serviceTier: "Professional",
+        clientType: "Corporate",
+        status: "pending",
+        progressPercent: 0,
+        updatedAt: new Date()
+      }
+    });
     const created = testEvent("client.created", {
       clientId: "client-worker-crm",
       companyName: "Worker CRM",
       createdBy: "user@example.com",
       plan: "growth"
     });
-    const record = createCrmRecord(created);
+    const record = await createCrmRecord(created);
     const uploaded = testEvent("document.uploaded", {
       clientId: "client-worker-crm",
       documentId: "doc-worker-crm",
       fileName: "passport.pdf",
       uploadedBy: "user@example.com"
     });
-    const updated = associateCrmDocument(uploaded);
+    const updated = await associateCrmDocument(uploaded);
 
     assert.equal(record.crmId, "crm-client-worker-crm");
     assert.equal(updated?.documents.length, 1);
     assert.equal(updated?.documents[0]?.documentId, "doc-worker-crm");
   });
 
-  it("provisions data-room metadata for client.created", () => {
-    const room = provisionDataRoom(
+  it("provisions data-room metadata for client.created", async () => {
+    await prisma.client.create({
+      data: {
+        id: "client-worker-room",
+        name: "Worker Room",
+        contactPerson: "Casey Room",
+        contactEmail: "casey.room@example.com",
+        jurisdiction: "Singapore",
+        serviceTier: "Enterprise",
+        clientType: "SME",
+        status: "pending",
+        progressPercent: 0,
+        updatedAt: new Date()
+      }
+    });
+    const room = await provisionDataRoom(
       testEvent("client.created", {
         clientId: "client-worker-room",
         companyName: "Worker Room",
@@ -475,8 +731,8 @@ describe("worker business side effects", () => {
     assert.match(room.createdAt, /^\d{4}-\d{2}-\d{2}T/);
   });
 
-  it("updates frontend onboarding progress from onboarding worker state", () => {
-    const client = createClient({
+  it("updates frontend onboarding progress from onboarding worker state", async () => {
+    const client = await createClient({
       companyName: "Worker Onboarding",
       contactPerson: "Ona Shah",
       email: "ona@example.com",
@@ -485,7 +741,7 @@ describe("worker business side effects", () => {
       clientType: "Startup"
     });
 
-    initializeOnboardingState(
+    await initializeOnboardingState(
       testEvent("client.created", {
         clientId: client.id,
         companyName: client.name,
@@ -493,7 +749,7 @@ describe("worker business side effects", () => {
         plan: "starter"
       })
     );
-    updateOnboardingProgress(
+    await updateOnboardingProgress(
       testEvent(
         "document.uploaded",
         {
@@ -506,10 +762,178 @@ describe("worker business side effects", () => {
       )
     );
 
-    const progress = getOnboardingProgress(client.id);
+    const progress = await getOnboardingProgress(client.id);
     assert.equal(progress?.progressPercent, 20);
     assert.equal(progress?.overallStatus, "in_progress");
     assert.equal(progress?.steps[0]?.status, "completed");
+  });
+});
+
+describe("production readiness E2E scenarios", () => {
+  it("Scenario 1: startup client identity document advances onboarding", async () => {
+    const eventBus = new CapturingEventBus();
+    const baseUrl = await frontendApp(eventBus);
+    const token = authToken("startup-user", ["user"]);
+
+    const created = await postJson(`${baseUrl}/api/clients`, token, {
+      companyName: "E2E Startup",
+      contactPerson: "Sia Rao",
+      email: "sia.startup@example.com",
+      jurisdiction: "India",
+      serviceTier: "Starter",
+      clientType: "Startup"
+    });
+    assert.equal(created.response.status, 201);
+    assert.equal(eventBus.published[0]?.eventName, "client.created");
+
+    const clientId = created.body.id;
+    await initializeOnboardingState(
+      testEvent("client.created", {
+        clientId,
+        companyName: created.body.name,
+        createdBy: "startup-user",
+        plan: "starter"
+      })
+    );
+    const uploaded = await postJson(`${baseUrl}/api/onboarding/${clientId}/documents/upload`, token, {
+      stepKey: "identity",
+      fileName: "founder-id.pdf"
+    });
+    assert.equal(uploaded.response.status, 201);
+
+    await updateOnboardingProgress(
+      testEvent(
+        "document.uploaded",
+        {
+          clientId,
+          documentId: uploaded.body.document.id,
+          fileName: uploaded.body.document.fileName,
+          uploadedBy: "startup-user"
+        },
+        { stepKey: "identity" }
+      )
+    );
+
+    const progress = await getJson(`${baseUrl}/api/onboarding/${clientId}/progress`, token);
+    assert.equal(progress.response.status, 200);
+    assert.equal(progress.body.progressPercent, 20);
+    assert.equal(progress.body.steps[0].status, "completed");
+  });
+
+  it("Scenario 2: corporate client multiple documents create CRM associations", async () => {
+    const client = await createClient({
+      companyName: "E2E Corporate",
+      contactPerson: "Cora Lee",
+      email: "cora.corporate@example.com",
+      jurisdiction: "Singapore",
+      serviceTier: "Professional",
+      clientType: "Corporate"
+    });
+    await createCrmRecord(
+      testEvent("client.created", {
+        clientId: client.id,
+        companyName: client.name,
+        createdBy: "corporate-user",
+        plan: "growth"
+      })
+    );
+
+    await associateCrmDocument(
+      testEvent("document.uploaded", {
+        clientId: client.id,
+        documentId: "doc-corp-identity",
+        fileName: "director-id.pdf",
+        uploadedBy: "corporate-user"
+      })
+    );
+    const record = await associateCrmDocument(
+      testEvent("document.uploaded", {
+        clientId: client.id,
+        documentId: "doc-corp-incorporation",
+        fileName: "incorporation.pdf",
+        uploadedBy: "corporate-user"
+      })
+    );
+
+    assert.equal(record?.documents.length, 2);
+  });
+
+  it("Scenario 3: enterprise client completes onboarding and updates dashboard metrics", async () => {
+    const client = await createClient({
+      companyName: "E2E Enterprise",
+      contactPerson: "Enzo Park",
+      email: "enzo.enterprise@example.com",
+      jurisdiction: "United States",
+      serviceTier: "Enterprise",
+      clientType: "Corporate"
+    });
+    await initializeOnboardingState(
+      testEvent("client.created", {
+        clientId: client.id,
+        companyName: client.name,
+        createdBy: "enterprise-user",
+        plan: "enterprise"
+      })
+    );
+
+    for (const stepKey of ["identity", "company_documents", "financial_documents", "compliance", "review"] as const) {
+      await updateOnboardingProgress(
+        testEvent(
+          "document.uploaded",
+          {
+            clientId: client.id,
+            documentId: `doc-${stepKey}`,
+            fileName: `${stepKey}.pdf`,
+            uploadedBy: "enterprise-user"
+          },
+          { stepKey }
+        )
+      );
+    }
+
+    const progress = await getOnboardingProgress(client.id);
+    assert.equal(progress?.progressPercent, 100);
+    assert.equal(progress?.overallStatus, "completed");
+
+    const baseUrl = await frontendApp(new CapturingEventBus());
+    const summary = await getJson(`${baseUrl}/api/dashboard/summary`, authToken("enterprise-user", ["admin"]));
+    assert.equal(summary.response.status, 200);
+    assert.ok(summary.body.completedOnboarding >= 1);
+  });
+
+  it("Scenario 4: invalid auth, invalid document step, missing client, and retry path fail gracefully", async () => {
+    const baseUrl = await frontendApp(new CapturingEventBus());
+    const missingAuth = await fetch(`${baseUrl}/api/dashboard/summary`);
+    assert.equal(missingAuth.status, 401);
+
+    const token = authToken("failure-user", ["user"]);
+    const missingClient = await getJson(`${baseUrl}/api/clients/client-missing`, token);
+    assert.equal(missingClient.response.status, 404);
+
+    const client = await createClient({
+      companyName: "E2E Failure",
+      contactPerson: "Fay Kim",
+      email: "fay.failure@example.com",
+      jurisdiction: "India",
+      serviceTier: "Starter",
+      clientType: "Startup"
+    });
+    const invalidDocument = await postJson(`${baseUrl}/api/onboarding/${client.id}/documents/upload`, token, {
+      stepKey: "not-a-step",
+      fileName: "bad.exe"
+    });
+    assert.equal(invalidDocument.response.status, 400);
+    assert.equal(invalidDocument.body.error, "validation_error");
+
+    const first = await associateCrmDocument(
+      testEvent("document.uploaded", {
+        clientId: "client-without-crm",
+        documentId: "doc-retry-missing-crm",
+        fileName: "missing-crm.pdf",
+        uploadedBy: "failure-user"
+      })
+    );
+    assert.equal(first, undefined);
   });
 });
 
@@ -556,6 +980,53 @@ async function startApp(configure: (app: express.Express) => void): Promise<stri
   await new Promise<void>((resolve) => server.once("listening", resolve));
   const address = server.address() as AddressInfo;
   return `http://127.0.0.1:${address.port}`;
+}
+
+async function frontendApp(eventBus: EventBus): Promise<string> {
+  return startApp((app) => {
+    app.use(express.json());
+    app.use(requestIdMiddleware);
+    app.use(authRoutes());
+    app.use(dashboardRoutes(eventBus));
+    app.use(onboardingFrontendRoutes(eventBus));
+    app.use(chatRoutes());
+    const testErrorHandler: express.ErrorRequestHandler = (error, req, res, _next) => {
+      if (error?.issues) {
+        res.status(400).json({
+          error: "validation_error",
+          message: "Invalid request payload",
+          issues: error.issues,
+          requestId: req.requestId
+        });
+        return;
+      }
+      res.status(500).json({ error: "internal_server_error", requestId: req.requestId });
+    };
+    app.use(testErrorHandler);
+  });
+}
+
+function authToken(sub: string, roles: Array<"admin" | "user" | "service">): string {
+  return jwt.sign({ sub, roles }, env.JWT_SECRET, { algorithm: "HS256", expiresIn: "15m" });
+}
+
+async function postJson(url: string, token: string, body: unknown): Promise<{ response: Response; body: any }> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify(body)
+  });
+  return { response, body: await response.json() };
+}
+
+async function getJson(url: string, token: string): Promise<{ response: Response; body: any }> {
+  const response = await fetch(url, {
+    headers: { authorization: `Bearer ${token}` }
+  });
+  return { response, body: await response.json() };
 }
 
 class MemoryRedisRateLimitClient implements RedisRateLimitClient {

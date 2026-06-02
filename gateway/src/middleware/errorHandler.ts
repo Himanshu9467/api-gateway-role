@@ -21,9 +21,10 @@ export function errorHandler(logger: Logger): ErrorRequestHandler {
       error: error instanceof Error ? error.message : "Unknown error"
     });
 
-    res.status(500).json({
-      error: "internal_server_error",
-      message: "Unexpected gateway error",
+    const statusCode = typeof (error as any)?.statusCode === "number" ? (error as any).statusCode : 500;
+    res.status(statusCode).json({
+      error: (error as any)?.code ?? "internal_server_error",
+      message: statusCode === 500 ? "Unexpected gateway error" : error.message,
       requestId: req.requestId
     });
   };

@@ -1,0 +1,111 @@
+locals {
+  name = "${var.project}-${var.environment}"
+  tags = { Project = var.project, Environment = var.environment, ManagedBy = "terraform", Criticality = "production" }
+  common_environment = [
+    { name = "NODE_ENV", value = "production" },
+    { name = "PORT", value = "4000" },
+    { name = "SECRET_PROVIDER", value = "aws" },
+    { name = "AWS_SECRETS_REGION", value = var.aws_region },
+    { name = "AWS_SECRETS_JSON_ID", value = module.secrets.secret_name },
+    { name = "STORAGE_PROVIDER", value = "s3" },
+    { name = "S3_BUCKET", value = module.s3.bucket_name },
+    { name = "S3_REGION", value = var.aws_region },
+    { name = "TRACING_ENABLED", value = "true" }
+  ]
+  service_images = {
+    gateway           = { repository_name = "${local.name}/gateway", image_tag = var.image_tag, command = ["node", "gateway/dist/index.js"], cpu = 1024, memory = 2048, desired_count = 3, min_count = 3, max_count = 10, environment = [] }
+    crm-worker        = { repository_name = "${local.name}/crm-worker", image_tag = var.image_tag, command = ["node", "gateway/dist/examples/crm.consumer.js"], cpu = 512, memory = 1024, desired_count = 3, min_count = 2, max_count = 8, environment = [{ name = "WORKER_METRICS_PORT", value = "4101" }] }
+    onboarding-worker = { repository_name = "${local.name}/onboarding-worker", image_tag = var.image_tag, command = ["node", "gateway/dist/examples/onboarding.consumer.js"], cpu = 512, memory = 1024, desired_count = 3, min_count = 2, max_count = 8, environment = [{ name = "WORKER_METRICS_PORT", value = "4103" }] }
+    data-room-worker  = { repository_name = "${local.name}/data-room-worker", image_tag = var.image_tag, command = ["node", "gateway/dist/examples/dataRoom.consumer.js"], cpu = 512, memory = 1024, desired_count = 3, min_count = 2, max_count = 8, environment = [{ name = "WORKER_METRICS_PORT", value = "4102" }] }
+  }
+}
+
+module "network" {
+  source             = "../../modules/network"
+  name               = local.name
+  vpc_cidr           = "10.40.0.0/16"
+  enable_nat_gateway = true
+  public_subnets     = { a = { cidr = "10.40.0.0/24", az = "${var.aws_region}a" }, b = { cidr = "10.40.1.0/24", az = "${var.aws_region}b" } }
+  private_subnets    = { a = { cidr = "10.40.10.0/24", az = "${var.aws_region}a" }, b = { cidr = "10.40.11.0/24", az = "${var.aws_region}b" } }
+  tags               = local.tags
+}
+
+module "secrets" {
+  source                    = "../../modules/secrets"
+  name                      = local.name
+  create_placeholder_secret = false
+  tags                      = local.tags
+}
+
+module "s3" {
+  source      = "../../modules/s3"
+  bucket_name = "${local.name}-documents"
+  kms_key_arn = module.secrets.kms_key_arn
+  tags        = local.tags
+}
+
+module "alb" {
+  source            = "../../modules/alb"
+  name              = local.name
+  vpc_id            = module.network.vpc_id
+  public_subnet_ids = module.network.public_subnet_ids
+  allowed_cidrs     = var.allowed_cidrs
+  tags              = local.tags
+}
+
+module "monitoring" {
+  source          = "../../modules/monitoring"
+  name            = local.name
+  log_group_names = keys(local.service_images)
+  retention_days  = 90
+  kms_key_arn     = module.secrets.kms_key_arn
+  tags            = local.tags
+}
+
+module "ecs" {
+  source                   = "../../modules/ecs"
+  name                     = local.name
+  aws_region               = var.aws_region
+  vpc_id                   = module.network.vpc_id
+  private_subnet_ids       = module.network.private_subnet_ids
+  alb_security_group_id    = module.alb.alb_security_group_id
+  gateway_target_group_arn = module.alb.blue_target_group_arn
+  gateway_blue_target_group_name  = module.alb.blue_target_group_name
+  gateway_green_target_group_name = module.alb.green_target_group_name
+  alb_listener_arn        = module.alb.listener_arn
+  secret_arn               = module.secrets.secret_arn
+  kms_key_arn              = module.secrets.kms_key_arn
+  s3_bucket_arn            = module.s3.bucket_arn
+  common_environment       = local.common_environment
+  service_images           = local.service_images
+  tags                     = local.tags
+}
+
+module "postgres" {
+  source                     = "../../modules/postgres"
+  name                       = local.name
+  vpc_id                     = module.network.vpc_id
+  private_subnet_ids         = module.network.private_subnet_ids
+  allowed_security_group_ids = [module.ecs.ecs_security_group_id]
+  kms_key_arn                = module.secrets.kms_key_arn
+  password                   = var.db_password
+  instance_class             = "db.m7g.large"
+  allocated_storage          = 100
+  max_allocated_storage      = 1000
+  multi_az                   = true
+  backup_retention_days      = 35
+  deletion_protection        = true
+  tags                       = local.tags
+}
+
+module "redis" {
+  source                     = "../../modules/redis"
+  name                       = local.name
+  vpc_id                     = module.network.vpc_id
+  private_subnet_ids         = module.network.private_subnet_ids
+  allowed_security_group_ids = [module.ecs.ecs_security_group_id]
+  kms_key_arn                = module.secrets.kms_key_arn
+  node_type                  = "cache.m7g.large"
+  num_cache_clusters         = 3
+  tags                       = local.tags
+}
