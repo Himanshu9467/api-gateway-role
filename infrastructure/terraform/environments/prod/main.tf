@@ -63,22 +63,22 @@ module "monitoring" {
 }
 
 module "ecs" {
-  source                   = "../../modules/ecs"
-  name                     = local.name
-  aws_region               = var.aws_region
-  vpc_id                   = module.network.vpc_id
-  private_subnet_ids       = module.network.private_subnet_ids
-  alb_security_group_id    = module.alb.alb_security_group_id
-  gateway_target_group_arn = module.alb.blue_target_group_arn
+  source                          = "../../modules/ecs"
+  name                            = local.name
+  aws_region                      = var.aws_region
+  vpc_id                          = module.network.vpc_id
+  private_subnet_ids              = module.network.private_subnet_ids
+  alb_security_group_id           = module.alb.alb_security_group_id
+  gateway_target_group_arn        = module.alb.blue_target_group_arn
   gateway_blue_target_group_name  = module.alb.blue_target_group_name
   gateway_green_target_group_name = module.alb.green_target_group_name
-  alb_listener_arn        = module.alb.listener_arn
-  secret_arn               = module.secrets.secret_arn
-  kms_key_arn              = module.secrets.kms_key_arn
-  s3_bucket_arn            = module.s3.bucket_arn
-  common_environment       = local.common_environment
-  service_images           = local.service_images
-  tags                     = local.tags
+  alb_listener_arn                = module.alb.listener_arn
+  secret_arn                      = module.secrets.secret_arn
+  kms_key_arn                     = module.secrets.kms_key_arn
+  s3_bucket_arn                   = module.s3.bucket_arn
+  common_environment              = local.common_environment
+  service_images                  = local.service_images
+  tags                            = local.tags
 }
 
 module "postgres" {

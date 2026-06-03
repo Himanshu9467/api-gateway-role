@@ -1,4 +1,5 @@
-import jwt from "jsonwebtoken";
+import { createPublicKey } from "node:crypto";
+import jwt, { type JwtHeader, type JwtPayload, type SigningKeyCallback } from "jsonwebtoken";
 import { env } from "../config/env";
 import type { Role } from "../middleware/auth";
 import { writeAuditLog } from "../services/audit.service";
@@ -25,6 +26,7 @@ interface ExternalProviderOptions {
   name: AuthProvider["name"];
   issuer?: string;
   audience?: string;
+  jwksUri?: string;
 }
 
 interface ExternalClaims {
@@ -36,7 +38,11 @@ interface ExternalClaims {
   [claim: string]: unknown;
 }
 
+type JwksKey = JsonWebKey & { kid?: string };
+
 const allowedRoles = new Set<Role>(["admin", "user", "service"]);
+const allowedFederatedAlgorithms = ["RS256"] as const;
+const jwksCache = new Map<string, string>();
 
 export class LocalAuthProvider implements AuthProvider {
   name = "local" as const;
@@ -46,27 +52,23 @@ export class LocalAuthProvider implements AuthProvider {
   }
 }
 
-class ClaimsBasedProvider implements AuthProvider {
+export class ClaimsBasedProvider implements AuthProvider {
   name: AuthProvider["name"];
   private issuer?: string;
   private audience?: string;
+  private jwksUri?: string;
 
   constructor(options: ExternalProviderOptions) {
     this.name = options.name;
     this.issuer = options.issuer;
     this.audience = options.audience;
+    this.jwksUri = options.jwksUri;
   }
 
   async verifyFederatedLogin(input: FederatedLoginInput, context: AuthContext): Promise<AuthUserView> {
-    const claims = jwt.decode(input.idToken) as ExternalClaims | null;
+    const claims = await this.verifyIdentityToken(input.idToken);
     if (!claims?.sub || !claims.email) {
       throw providerError("invalid_external_token", "External identity token is missing required subject or email claims");
-    }
-    if (this.issuer && claims.iss !== this.issuer) {
-      throw providerError("invalid_external_issuer", "External identity token issuer is not trusted");
-    }
-    if (this.audience && !audienceMatches(claims.aud, this.audience)) {
-      throw providerError("invalid_external_audience", "External identity token audience is not trusted");
     }
 
     const user = await syncFederatedUser({
@@ -87,6 +89,60 @@ class ClaimsBasedProvider implements AuthProvider {
 
     return user;
   }
+
+  private async verifyIdentityToken(idToken: string): Promise<ExternalClaims> {
+    if (!this.issuer || !this.audience || !this.jwksUri) {
+      throw providerError("federated_provider_not_configured", "External identity provider verification is not configured");
+    }
+
+    return new Promise((resolve, reject) => {
+      jwt.verify(
+        idToken,
+        this.getSigningKey,
+        {
+          algorithms: [...allowedFederatedAlgorithms],
+          issuer: this.issuer,
+          audience: this.audience
+        },
+        (error, decoded) => {
+          if (error || !decoded || typeof decoded === "string") {
+            reject(providerError("invalid_external_token", "External identity token could not be verified"));
+            return;
+          }
+          resolve(decoded as JwtPayload & ExternalClaims);
+        }
+      );
+    });
+  }
+
+  private getSigningKey = async (header: JwtHeader, callback: SigningKeyCallback): Promise<void> => {
+    try {
+      if (
+        !header.kid ||
+        !header.alg ||
+        !allowedFederatedAlgorithms.includes(header.alg as (typeof allowedFederatedAlgorithms)[number])
+      ) {
+        callback(providerError("invalid_external_token", "External identity token uses an untrusted signing key"));
+        return;
+      }
+
+      const cacheKey = `${this.jwksUri}:${header.kid}`;
+      const cached = jwksCache.get(cacheKey);
+      if (cached) {
+        callback(null, cached);
+        return;
+      }
+
+      const key = await fetchJwksKey(this.jwksUri as string, header.kid);
+      const publicKey = createPublicKey({ key, format: "jwk" })
+        .export({ type: "spki", format: "pem" })
+        .toString();
+      jwksCache.set(cacheKey, publicKey);
+      callback(null, publicKey);
+    } catch {
+      callback(providerError("invalid_external_token", "External identity signing key could not be loaded"));
+    }
+  };
 }
 
 export class Auth0Provider extends ClaimsBasedProvider {
@@ -94,7 +150,10 @@ export class Auth0Provider extends ClaimsBasedProvider {
     super({
       name: "auth0",
       issuer: env.AUTH0_DOMAIN ? `https://${env.AUTH0_DOMAIN.replace(/^https?:\/\//, "").replace(/\/$/, "")}/` : undefined,
-      audience: env.AUTH0_AUDIENCE
+      audience: env.AUTH0_AUDIENCE,
+      jwksUri: env.AUTH0_DOMAIN
+        ? `https://${env.AUTH0_DOMAIN.replace(/^https?:\/\//, "").replace(/\/$/, "")}/.well-known/jwks.json`
+        : undefined
     });
   }
 }
@@ -105,13 +164,23 @@ export class CognitoProvider extends ClaimsBasedProvider {
       env.COGNITO_REGION && env.COGNITO_USER_POOL_ID
         ? `https://cognito-idp.${env.COGNITO_REGION}.amazonaws.com/${env.COGNITO_USER_POOL_ID}`
         : undefined;
-    super({ name: "cognito", issuer, audience: env.COGNITO_CLIENT_ID });
+    super({
+      name: "cognito",
+      issuer,
+      audience: env.COGNITO_CLIENT_ID,
+      jwksUri: issuer ? `${issuer}/.well-known/jwks.json` : undefined
+    });
   }
 }
 
 export class KeycloakProvider extends ClaimsBasedProvider {
   constructor() {
-    super({ name: "keycloak", issuer: env.KEYCLOAK_ISSUER, audience: env.KEYCLOAK_AUDIENCE });
+    super({
+      name: "keycloak",
+      issuer: env.KEYCLOAK_ISSUER,
+      audience: env.KEYCLOAK_AUDIENCE,
+      jwksUri: env.KEYCLOAK_ISSUER ? `${env.KEYCLOAK_ISSUER.replace(/\/$/, "")}/protocol/openid-connect/certs` : undefined
+    });
   }
 }
 
@@ -135,13 +204,22 @@ function mapRoles(claims: ExternalClaims): Role[] {
   return mapped.length > 0 ? mapped : [env.AUTH_DEFAULT_ROLE];
 }
 
-function audienceMatches(actual: string | string[] | undefined, expected: string): boolean {
-  return Array.isArray(actual) ? actual.includes(expected) : actual === expected;
-}
-
 function providerError(code: string, message: string): Error {
   const error = new Error(message);
   (error as any).statusCode = 401;
   (error as any).code = code;
   return error;
+}
+
+async function fetchJwksKey(jwksUri: string, kid: string): Promise<JwksKey> {
+  const response = await fetch(jwksUri);
+  if (!response.ok) {
+    throw new Error("JWKS request failed");
+  }
+  const body = (await response.json()) as { keys?: JwksKey[] };
+  const key = body.keys?.find((candidate) => candidate.kid === kid);
+  if (!key) {
+    throw new Error("JWKS key not found");
+  }
+  return key;
 }

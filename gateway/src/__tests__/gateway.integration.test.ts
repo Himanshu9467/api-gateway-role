@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
+import { generateKeyPairSync } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import express from "express";
@@ -24,6 +25,7 @@ import { docsRoutes } from "../routes/docs.routes";
 import { observabilityRoutes } from "../routes/observability.routes";
 import { orchestrationRoutes } from "../routes/orchestration.routes";
 import { authRoutes } from "../routes/auth.routes";
+import { ClaimsBasedProvider } from "../auth/AuthProvider";
 import { dashboardRoutes } from "../routes/dashboard.routes";
 import { chatRoutes } from "../routes/chat.routes";
 import { onboardingFrontendRoutes } from "../routes/onboardingFrontend.routes";
@@ -343,6 +345,121 @@ describe("gateway auth and RBAC", () => {
       body: JSON.stringify({ token: issued?.token })
     });
     assert.equal(replay.status, 400);
+  });
+});
+
+describe("identity federation JWKS verification", () => {
+  it("accepts Auth0, Cognito, and Keycloak ID tokens only after JWKS signature, issuer, audience, and expiration verification", async () => {
+    const keyPair = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const publicJwk = keyPair.publicKey.export({ format: "jwk" });
+    const jwksBaseUrl = await startApp((app) => {
+      app.get("/.well-known/jwks.json", (_req, res) => {
+        res.json({
+          keys: [{ ...publicJwk, kid: "federated-key-1", alg: "RS256", use: "sig" }]
+        });
+      });
+    });
+    const providers = [
+      new ClaimsBasedProvider({
+        name: "auth0",
+        issuer: "https://tenant.example.auth0.com/",
+        audience: "api://gateway",
+        jwksUri: `${jwksBaseUrl}/.well-known/jwks.json`
+      }),
+      new ClaimsBasedProvider({
+        name: "cognito",
+        issuer: "https://cognito-idp.us-east-1.amazonaws.com/pool-id",
+        audience: "cognito-client-id",
+        jwksUri: `${jwksBaseUrl}/.well-known/jwks.json`
+      }),
+      new ClaimsBasedProvider({
+        name: "keycloak",
+        issuer: "https://keycloak.example.com/realms/platform",
+        audience: "gateway-client",
+        jwksUri: `${jwksBaseUrl}/.well-known/jwks.json`
+      })
+    ];
+
+    for (const provider of providers) {
+      const idToken = jwt.sign(
+        {
+          sub: `${provider.name}-subject`,
+          email: `${provider.name}@example.com`,
+          name: `${provider.name} User`,
+          roles: ["user"]
+        },
+        keyPair.privateKey,
+        {
+          algorithm: "RS256",
+          expiresIn: "15m",
+          issuer: issuerFor(provider),
+          audience: audienceFor(provider),
+          keyid: "federated-key-1"
+        }
+      );
+
+      const user = await provider.verifyFederatedLogin({ idToken }, {});
+
+      assert.equal(user.email, `${provider.name}@example.com`);
+      assert.deepEqual(user.roles, ["user"]);
+    }
+  });
+
+  it("rejects unsigned, expired, wrong issuer, wrong audience, and unknown-key federated tokens", async () => {
+    const keyPair = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const publicJwk = keyPair.publicKey.export({ format: "jwk" });
+    const jwksBaseUrl = await startApp((app) => {
+      app.get("/.well-known/jwks.json", (_req, res) => {
+        res.json({
+          keys: [{ ...publicJwk, kid: "federated-key-2", alg: "RS256", use: "sig" }]
+        });
+      });
+    });
+    const provider = new ClaimsBasedProvider({
+      name: "keycloak",
+      issuer: "https://keycloak.example.com/realms/platform",
+      audience: "gateway-client",
+      jwksUri: `${jwksBaseUrl}/.well-known/jwks.json`
+    });
+
+    const validPayload = {
+      sub: "keycloak-subject",
+      email: "keycloak-negative@example.com",
+      roles: ["user"]
+    };
+    const validOptions = {
+      algorithm: "RS256" as const,
+      issuer: "https://keycloak.example.com/realms/platform",
+      audience: "gateway-client",
+      keyid: "federated-key-2"
+    };
+    const unsigned = [
+      Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url"),
+      Buffer.from(JSON.stringify({ ...validPayload, iss: validOptions.issuer, aud: validOptions.audience })).toString(
+        "base64url"
+      ),
+      ""
+    ].join(".");
+    const expired = jwt.sign(validPayload, keyPair.privateKey, { ...validOptions, expiresIn: "-1s" });
+    const wrongIssuer = jwt.sign(validPayload, keyPair.privateKey, {
+      ...validOptions,
+      issuer: "https://issuer.example.invalid",
+      expiresIn: "15m"
+    });
+    const wrongAudience = jwt.sign(validPayload, keyPair.privateKey, {
+      ...validOptions,
+      audience: "other-client",
+      expiresIn: "15m"
+    });
+    const unknownKey = jwt.sign(validPayload, keyPair.privateKey, {
+      ...validOptions,
+      keyid: "missing-key",
+      expiresIn: "15m"
+    });
+
+    for (const idToken of [unsigned, expired, wrongIssuer, wrongAudience, unknownKey]) {
+      await assert.rejects(() => provider.verifyFederatedLogin({ idToken }, {}), /External identity token/);
+    }
   });
 });
 
@@ -1008,6 +1125,32 @@ async function frontendApp(eventBus: EventBus): Promise<string> {
 
 function authToken(sub: string, roles: Array<"admin" | "user" | "service">): string {
   return jwt.sign({ sub, roles }, env.JWT_SECRET, { algorithm: "HS256", expiresIn: "15m" });
+}
+
+function issuerFor(provider: ClaimsBasedProvider): string {
+  switch (provider.name) {
+    case "auth0":
+      return "https://tenant.example.auth0.com/";
+    case "cognito":
+      return "https://cognito-idp.us-east-1.amazonaws.com/pool-id";
+    case "keycloak":
+      return "https://keycloak.example.com/realms/platform";
+    default:
+      throw new Error("Unsupported federated provider");
+  }
+}
+
+function audienceFor(provider: ClaimsBasedProvider): string {
+  switch (provider.name) {
+    case "auth0":
+      return "api://gateway";
+    case "cognito":
+      return "cognito-client-id";
+    case "keycloak":
+      return "gateway-client";
+    default:
+      throw new Error("Unsupported federated provider");
+  }
 }
 
 async function postJson(url: string, token: string, body: unknown): Promise<{ response: Response; body: any }> {

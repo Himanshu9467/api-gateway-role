@@ -7,16 +7,45 @@ PROJECT="${PROJECT:-ai-platform}"
 IMAGE_TAG="${IMAGE_TAG:-$(git rev-parse --short HEAD)}"
 CLUSTER="${CLUSTER:-${PROJECT}-${ENVIRONMENT}-cluster}"
 SERVICES=("gateway" "crm-worker" "onboarding-worker" "data-room-worker")
+DRY_RUN=false
+
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run)
+      DRY_RUN=true
+      ;;
+    *)
+      echo "Unknown argument: $arg"
+      exit 2
+      ;;
+  esac
+done
 
 require() {
   command -v "$1" >/dev/null 2>&1 || { echo "$1 is required"; exit 1; }
 }
 
 require aws
-require docker
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+if [ "$DRY_RUN" = true ]; then
+  echo "Dry run: no ECR pushes or ECS updates will be performed."
+  echo "Planned ECR pushes:"
+  for service in "${SERVICES[@]}"; do
+    repo="${PROJECT}-${ENVIRONMENT}/${service}"
+    image="${REGISTRY}/${repo}:${IMAGE_TAG}"
+    echo "  $image"
+  done
+  echo "Planned ECS updates:"
+  for service in "${SERVICES[@]}"; do
+    echo "  cluster=${CLUSTER} service=${PROJECT}-${ENVIRONMENT}-${service} force-new-deployment"
+  done
+  exit 0
+fi
+
+require docker
 aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
 
 for service in "${SERVICES[@]}"; do

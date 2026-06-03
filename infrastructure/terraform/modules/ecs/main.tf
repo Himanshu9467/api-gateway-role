@@ -29,7 +29,7 @@ resource "aws_ecs_cluster" "this" {
 resource "aws_iam_role" "execution" {
   name = "${var.name}-ecs-execution"
   assume_role_policy = jsonencode({
-    Version = "2012-10-17"
+    Version   = "2012-10-17"
     Statement = [{ Effect = "Allow", Principal = { Service = "ecs-tasks.amazonaws.com" }, Action = "sts:AssumeRole" }]
   })
   tags = var.tags
@@ -43,7 +43,7 @@ resource "aws_iam_role_policy_attachment" "execution" {
 resource "aws_iam_role" "codedeploy" {
   name = "${var.name}-codedeploy"
   assume_role_policy = jsonencode({
-    Version = "2012-10-17"
+    Version   = "2012-10-17"
     Statement = [{ Effect = "Allow", Principal = { Service = "codedeploy.amazonaws.com" }, Action = "sts:AssumeRole" }]
   })
   tags = var.tags
@@ -69,7 +69,7 @@ resource "aws_iam_role_policy" "execution_secrets" {
 resource "aws_iam_role" "task" {
   name = "${var.name}-ecs-task"
   assume_role_policy = jsonencode({
-    Version = "2012-10-17"
+    Version   = "2012-10-17"
     Statement = [{ Effect = "Allow", Principal = { Service = "ecs-tasks.amazonaws.com" }, Action = "sts:AssumeRole" }]
   })
   tags = var.tags
@@ -111,12 +111,12 @@ resource "aws_ecs_task_definition" "services" {
   task_role_arn            = aws_iam_role.task.arn
   container_definitions = jsonencode([
     {
-      name      = each.key
-      image     = "${aws_ecr_repository.images[each.key].repository_url}:${each.value.image_tag}"
-      essential = true
-      command   = each.value.command
+      name         = each.key
+      image        = "${aws_ecr_repository.images[each.key].repository_url}:${each.value.image_tag}"
+      essential    = true
+      command      = each.value.command
       portMappings = each.key == "gateway" ? [{ containerPort = var.container_port, protocol = "tcp" }] : []
-      environment = concat(var.common_environment, each.value.environment)
+      environment  = concat(var.common_environment, each.value.environment)
       secrets = [
         { name = "DATABASE_URL", valueFrom = "${var.secret_arn}:DATABASE_URL::" },
         { name = "REDIS_URL", valueFrom = "${var.secret_arn}:REDIS_URL::" },

@@ -3,7 +3,9 @@ param(
   [string]$Environment = "prod",
   [string]$Project = "ai-platform",
   [string]$ImageTag = "",
-  [string]$HealthUrl = $env:HEALTH_URL
+  [string]$HealthUrl = $env:HEALTH_URL,
+  [Alias("dry-run")]
+  [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,6 +16,22 @@ $services = @("gateway", "crm-worker", "onboarding-worker", "data-room-worker")
 $cluster = "$Project-$Environment-cluster"
 $accountId = (aws sts get-caller-identity --query Account --output text).Trim()
 $registry = "$accountId.dkr.ecr.$AwsRegion.amazonaws.com"
+
+if ($DryRun) {
+  Write-Host "Dry run: no ECR pushes or ECS updates will be performed."
+  Write-Host "Planned ECR pushes:"
+  foreach ($service in $services) {
+    $repo = "$Project-$Environment/$service"
+    $image = "$registry/$repo`:$ImageTag"
+    Write-Host "  $image"
+  }
+  Write-Host "Planned ECS updates:"
+  foreach ($service in $services) {
+    Write-Host "  cluster=$cluster service=$Project-$Environment-$service force-new-deployment"
+  }
+  exit 0
+}
+
 aws ecr get-login-password --region $AwsRegion | docker login --username AWS --password-stdin $registry
 
 foreach ($service in $services) {
