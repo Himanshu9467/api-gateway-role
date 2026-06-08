@@ -1,0 +1,314 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Client {
+  id                String              @id
+  name              String
+  contactPerson     String
+  contactEmail      String
+  jurisdiction      String
+  serviceTier       String
+  clientType        String
+  status            String
+  progressPercent   Int                 @default(0)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  activities        Activity[]
+  auditLogs         AuditLog[]
+  crmRecord         CRMRecord?
+  chatMessages      ChatMessage[]
+  dataRoom          DataRoom?
+  documents         Document[]
+  ocrResults        OcrResult[]
+  validationResults ValidationResult[]
+  reviewQueues      ReviewQueue[]
+  onboarding        OnboardingProgress?
+
+  @@index([status, updatedAt])
+  @@index([updatedAt])
+}
+
+model User {
+  id                      String                   @id
+  email                   String                   @unique
+  name                    String
+  passwordHash            String
+  roles                   String                   @default("user")
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
+  emailVerifiedAt         DateTime?
+  emailVerificationTokens EmailVerificationToken[]
+  passwordResetTokens     PasswordResetToken[]
+  refreshTokens           RefreshToken[]
+
+  @@index([email])
+}
+
+model RefreshToken {
+  id         String    @id
+  userId     String
+  tokenHash  String    @unique
+  familyId   String
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  replacedBy String?
+  createdAt  DateTime  @default(now())
+  userAgent  String?
+  ipAddress  String?
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@index([familyId])
+}
+
+model PasswordResetToken {
+  id        String    @id
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  ipAddress String?
+  userAgent String?
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@index([expiresAt])
+}
+
+model EmailVerificationToken {
+  id        String    @id
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  ipAddress String?
+  userAgent String?
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@index([expiresAt])
+}
+
+model Document {
+  id                String             @id
+  clientId          String
+  stepKey           String
+  fileName          String
+  fileSize          Int                @default(0)
+  mimeType          String
+  status            String
+  uploadedAt        DateTime           @default(now())
+  rejectionReason   String?
+  storageProvider   String             @default("local")
+  storagePath       String             @default("")
+  documentUrl       String             @default("")
+  storageMetadata   String             @default("{}")
+  bucket            String?
+  storageKey        String?
+  checksum          String             @default("")
+  client            Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  ocrResult         OcrResult?
+  validationResults ValidationResult[]
+  reviewQueue       ReviewQueue?
+
+  @@index([clientId, stepKey, uploadedAt])
+}
+
+model OcrResult {
+  id              String             @id
+  documentId      String             @unique
+  clientId        String
+  engine          String
+  status          String
+  rawText         String             @default("")
+  confidence      Float              @default(0)
+  metadata        String             @default("{}")
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  document        Document           @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  client          Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  extractedFields ExtractedField[]
+  validations     ValidationResult[]
+  reviewQueue     ReviewQueue?
+
+  @@index([clientId, createdAt])
+  @@index([status, updatedAt])
+}
+
+model ExtractedField {
+  id          String    @id
+  ocrResultId String
+  name        String
+  value       String
+  confidence  Float     @default(0)
+  source      String    @default("ocr")
+  createdAt   DateTime  @default(now())
+  ocrResult   OcrResult @relation(fields: [ocrResultId], references: [id], onDelete: Cascade)
+
+  @@unique([ocrResultId, name])
+  @@index([name, value])
+}
+
+model ValidationResult {
+  id          String     @id
+  documentId  String
+  clientId    String
+  ocrResultId String?
+  rule        String
+  status      String
+  severity    String
+  message     String
+  metadata    String     @default("{}")
+  createdAt   DateTime   @default(now())
+  document    Document   @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  client      Client     @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  ocrResult   OcrResult? @relation(fields: [ocrResultId], references: [id], onDelete: SetNull)
+
+  @@index([clientId, rule, createdAt])
+  @@index([documentId, status])
+  @@index([status, severity])
+}
+
+model ReviewQueue {
+  id          String         @id
+  documentId  String         @unique
+  clientId    String
+  ocrResultId String?        @unique
+  status      String
+  priority    String         @default("normal")
+  reason      String
+  assignedTo  String?
+  dueAt       DateTime?
+  escalatedAt DateTime?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  document    Document       @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  client      Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  ocrResult   OcrResult?     @relation(fields: [ocrResultId], references: [id], onDelete: SetNull)
+  actions     ReviewAction[]
+
+  @@index([status, priority, dueAt])
+  @@index([assignedTo, status])
+  @@index([clientId, createdAt])
+}
+
+model ReviewAction {
+  id            String      @id
+  reviewQueueId String
+  action        String
+  actorId       String
+  comment       String?
+  metadata      String      @default("{}")
+  createdAt     DateTime    @default(now())
+  reviewQueue   ReviewQueue @relation(fields: [reviewQueueId], references: [id], onDelete: Cascade)
+
+  @@index([reviewQueueId, createdAt])
+  @@index([actorId, createdAt])
+  @@index([action, createdAt])
+}
+
+model AuditLog {
+  id         String   @id
+  action     String
+  actorId    String?
+  actorType  String   @default("user")
+  clientId   String?
+  documentId String?
+  ipAddress  String?
+  userAgent  String?
+  metadata   String   @default("{}")
+  createdAt  DateTime @default(now())
+  client     Client?  @relation(fields: [clientId], references: [id])
+
+  @@index([action, createdAt])
+  @@index([actorId, createdAt])
+  @@index([clientId, createdAt])
+  @@index([documentId, createdAt])
+}
+
+model Activity {
+  id          String   @id
+  clientId    String?
+  title       String
+  description String
+  createdAt   DateTime @default(now())
+  type        String
+  client      Client?  @relation(fields: [clientId], references: [id])
+
+  @@index([clientId, createdAt])
+  @@index([createdAt])
+}
+
+model ChatMessage {
+  id        String   @id
+  clientId  String
+  stepKey   String
+  role      String
+  content   String
+  createdAt DateTime @default(now())
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([clientId, stepKey, createdAt])
+}
+
+model OnboardingProgress {
+  id              String                    @id
+  clientId        String                    @unique
+  status          String
+  progressPercent Int                       @default(0)
+  currentStep     String                    @default("identity")
+  startedAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
+  completedSteps  OnboardingCompletedStep[]
+  client          Client                    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+}
+
+model OnboardingCompletedStep {
+  id          String             @id
+  progressId  String
+  stepKey     String
+  completedAt DateTime           @default(now())
+  progress    OnboardingProgress @relation(fields: [progressId], references: [id], onDelete: Cascade)
+
+  @@unique([progressId, stepKey])
+}
+
+model CRMRecord {
+  crmId       String                   @id
+  clientId    String                   @unique
+  companyName String
+  plan        String
+  createdBy   String
+  createdAt   DateTime                 @default(now())
+  documents   CRMDocumentAssociation[]
+  client      Client                   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+}
+
+model CRMDocumentAssociation {
+  id           String    @id
+  crmId        String
+  documentId   String
+  fileName     String
+  uploadedBy   String
+  associatedAt DateTime  @default(now())
+  crmRecord    CRMRecord @relation(fields: [crmId], references: [crmId], onDelete: Cascade)
+
+  @@unique([crmId, documentId])
+}
+
+model DataRoom {
+  roomId    String   @id
+  clientId  String   @unique
+  createdAt DateTime @default(now())
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+}
