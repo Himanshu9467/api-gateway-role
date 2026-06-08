@@ -10,6 +10,7 @@ export interface CreateEventBusOptions {
   redisConnection?: Redis;
   defaultSubscribers?: Partial<Record<EventName, string[]>>;
   logger?: EventLogger;
+  concurrency?: number;
 }
 
 export function createEventBus(options: CreateEventBusOptions): EventBus {
@@ -25,6 +26,7 @@ export function createEventBus(options: CreateEventBusOptions): EventBus {
     serviceName: options.serviceName,
     connection: options.redisConnection,
     defaultSubscribers: options.defaultSubscribers,
-    logger: options.logger ?? new JsonEventLogger(options.serviceName)
+    logger: options.logger ?? new JsonEventLogger(options.serviceName),
+    concurrency: options.concurrency
   });
 }

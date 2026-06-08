@@ -14,6 +14,12 @@
     "worker:crm": "ts-node-dev --respawn --transpile-only src/examples/crm.consumer.ts",
     "worker:onboarding": "ts-node-dev --respawn --transpile-only src/examples/onboarding.consumer.ts",
     "worker:data-room": "ts-node-dev --respawn --transpile-only src/examples/dataRoom.consumer.ts",
+    "worker:ocr": "ts-node-dev --respawn --transpile-only src/examples/ocr.consumer.ts",
+    "worker:validation": "ts-node-dev --respawn --transpile-only src/examples/validation.consumer.ts",
+    "worker:review": "ts-node-dev --respawn --transpile-only src/examples/review.consumer.ts",
+    "worker:face-verification": "ts-node-dev --respawn --transpile-only src/examples/faceVerification.consumer.ts",
+    "worker:crm-sync": "ts-node-dev --respawn --transpile-only src/examples/crmSync.consumer.ts",
+    "worker:kyc": "ts-node-dev --respawn --transpile-only src/examples/kyc.consumer.ts",
     "mock:services": "ts-node-dev --respawn --transpile-only src/examples/mockServices.ts"
   },
   "dependencies": {

@@ -29,7 +29,7 @@ import { ClaimsBasedProvider } from "../auth/AuthProvider";
 import { dashboardRoutes } from "../routes/dashboard.routes";
 import { chatRoutes } from "../routes/chat.routes";
 import { onboardingFrontendRoutes } from "../routes/onboardingFrontend.routes";
-import { createCrmRecord, associateCrmDocument } from "../services/crmState.service";
+import { createCrmRecord, associateCrmDocument, syncCrmRecord } from "../services/crmState.service";
 import { provisionDataRoom } from "../services/dataRoomState.service";
 import {
   createClient,
@@ -37,7 +37,8 @@ import {
 } from "../services/frontendMockData.service";
 import {
   initializeOnboardingState,
-  updateOnboardingProgress
+  updateOnboardingProgress,
+  completeKyc
 } from "../services/onboardingState.service";
 import { disconnectDatabase, prisma } from "../services/database.service";
 import {
@@ -46,6 +47,14 @@ import {
   hashPassword
 } from "../services/auth.service";
 import { resetTestDatabase } from "./databaseTestSetup";
+import { extractDocumentText } from "../services/ocr.service";
+import { validateDocument } from "../services/validation.service";
+import { evaluateReview, approveReview, rejectReview, assignReview } from "../services/review.service";
+import { verifyFace } from "../services/faceVerification.service";
+import { ocrRoutes } from "../routes/ocr.routes";
+import { validationRoutes } from "../routes/validation.routes";
+import { reviewRoutes } from "../routes/review.routes";
+import { crmRoutes } from "../routes/crm.routes";
 
 const servers: Server[] = [];
 
@@ -1085,6 +1094,396 @@ describe("gateway documentation and metrics", () => {
     assert.match(body, /gateway_uptime_seconds/);
     assert.match(body, /gateway_http_requests_total/);
     assert.match(body, /route="\/ping"/);
+  });
+});
+
+describe("OCR service and consumer", () => {
+  it("extracts text from documents with confidence scoring", async () => {
+    const result = await extractDocumentText("doc-ocr-test1");
+
+    assert.equal(result.documentId, "doc-ocr-test1");
+    assert.ok(result.extractedText.length > 0);
+    assert.ok(result.confidence >= 0 && result.confidence <= 1);
+  });
+
+  it("calculates higher confidence for content-rich documents", async () => {
+    const result = await extractDocumentText(
+      "doc-ocr-test2",
+      "Full name: John Doe. Date of Birth: 1990-01-15. ID Number: ABC1234567. Issued: 2020-03-01. Expiry: 2030-03-01. This is a rich document with multiple data fields."
+    );
+
+    assert.ok(result.confidence >= 0.8);
+    assert.ok(result.extractedText.includes("John Doe"));
+  });
+});
+
+describe("validation service", () => {
+  it("validates documents with high confidence and all required fields", async () => {
+    const result = await validateDocument(
+      "doc-val-test1",
+      "Full name: Jane Smith. ID Number: XYZ9876543. Registration: REG-00001. Date: 2024-01-01.",
+      0.92
+    );
+
+    assert.equal(result.documentId, "doc-val-test1");
+    assert.equal(result.valid, true);
+    assert.ok(result.score >= 80);
+  });
+
+  it("rejects documents with low confidence", async () => {
+    const result = await validateDocument(
+      "doc-val-test2",
+      "Full name: Test. ID Number: 123. Date: 2024-01-01.",
+      0.4
+    );
+
+    assert.equal(result.valid, false);
+    assert.ok(result.score < 80);
+    assert.ok(result.issues.includes("confidence"));
+  });
+
+  it("rejects documents with missing required fields", async () => {
+    const result = await validateDocument(
+      "doc-val-test3",
+      "Some random text without structure",
+      0.95
+    );
+
+    assert.equal(result.valid, false);
+    assert.ok(result.issues !== "none");
+  });
+});
+
+describe("review service decision engine", () => {
+  it("auto-approves documents with score >= 95", async () => {
+    const result = await evaluateReview("doc-review-1", 98, true);
+
+    assert.equal(result.decision, "approved");
+    assert.ok(result.reviewId.startsWith("review-"));
+  });
+
+  it("assigns reviewer for scores between 80 and 95", async () => {
+    const result = await evaluateReview("doc-review-2", 87, true);
+
+    assert.equal(result.decision, "assigned");
+    assert.ok(result.reviewerId);
+    assert.ok(result.reviewerId!.startsWith("reviewer-"));
+  });
+
+  it("auto-rejects documents with score < 80", async () => {
+    const result = await evaluateReview("doc-review-3", 65, true);
+
+    assert.equal(result.decision, "rejected");
+    assert.ok(result.reason);
+    assert.ok(result.reason!.includes("65"));
+  });
+
+  it("auto-rejects invalid documents regardless of score", async () => {
+    const result = await evaluateReview("doc-review-4", 99, false);
+
+    assert.equal(result.decision, "rejected");
+    assert.ok(result.reason!.includes("validation failed"));
+  });
+
+  it("handles manual approve, reject, and assign actions", async () => {
+    const approved = await approveReview("review-manual-1");
+    assert.equal(approved.decision, "approved");
+    assert.equal(approved.reviewId, "review-manual-1");
+
+    const rejected = await rejectReview("review-manual-2", "Quality too low");
+    assert.equal(rejected.decision, "rejected");
+    assert.equal(rejected.reason, "Quality too low");
+
+    const assigned = await assignReview("review-manual-3", "reviewer-abc");
+    assert.equal(assigned.decision, "assigned");
+    assert.equal(assigned.reviewerId, "reviewer-abc");
+  });
+});
+
+describe("face verification service", () => {
+  it("generates verification scores within valid range", async () => {
+    const result = await verifyFace("review-face-1");
+
+    assert.ok(result.verificationId.startsWith("face-"));
+    assert.ok(result.score >= 0 && result.score <= 1);
+    assert.equal(typeof result.passed, "boolean");
+  });
+});
+
+describe("CRM sync service", () => {
+  it("generates CRM reference for a customer", async () => {
+    const result = await syncCrmRecord("client-crm-sync-test");
+
+    assert.equal(result.customerId, "client-crm-sync-test");
+    assert.ok(result.crmReference.startsWith("crm-ref-"));
+    assert.ok(result.crmReference.includes("client-crm-sync-test"));
+  });
+});
+
+describe("KYC completion service", () => {
+  it("completes KYC and updates onboarding state", async () => {
+    const client = await createClient({
+      companyName: "KYC Test Corp",
+      contactPerson: "Kara Kim",
+      email: "kara.kyc@example.com",
+      jurisdiction: "Singapore",
+      serviceTier: "Professional",
+      clientType: "Corporate"
+    });
+
+    await initializeOnboardingState(
+      testEvent("client.created", {
+        clientId: client.id,
+        companyName: client.name,
+        createdBy: "kyc-tester",
+        plan: "growth"
+      })
+    );
+
+    const result = await completeKyc("kyc-test-1", client.id, "approved");
+
+    assert.equal(result.kycId, "kyc-test-1");
+    assert.equal(result.status, "approved");
+    assert.equal(result.clientId, client.id);
+  });
+});
+
+describe("new API routes", () => {
+  it("OCR extract route publishes document.ocr.completed", async () => {
+    const eventBus = new CapturingEventBus();
+    const baseUrl = await startApp((app) => {
+      app.use(express.json());
+      app.use(requestIdMiddleware);
+      app.use(ocrRoutes(eventBus, new Logger("test-gateway")));
+    });
+    const token = jwt.sign({ sub: "admin-1", roles: ["admin"] }, env.JWT_SECRET, {
+      expiresIn: "15m"
+    });
+
+    const response = await fetch(`${baseUrl}/api/ocr/extract`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        documentId: "doc-route-ocr",
+        fileContent: "Full name: Alice Park. ID Number: ID-ROUTE-001. Date: 2024-06-01."
+      })
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 202);
+    assert.equal(body.event, "document.ocr.completed");
+    assert.ok(body.result.confidence > 0);
+    assert.equal(eventBus.published.length, 1);
+    assert.equal(eventBus.published[0]?.eventName, "document.ocr.completed");
+  });
+
+  it("validation route publishes document.validation.completed", async () => {
+    const eventBus = new CapturingEventBus();
+    const baseUrl = await startApp((app) => {
+      app.use(express.json());
+      app.use(requestIdMiddleware);
+      app.use(validationRoutes(eventBus, new Logger("test-gateway")));
+    });
+    const token = jwt.sign({ sub: "admin-1", roles: ["admin"] }, env.JWT_SECRET, {
+      expiresIn: "15m"
+    });
+
+    const response = await fetch(`${baseUrl}/api/validation/document`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        documentId: "doc-route-val",
+        extractedText: "Full name: Bob Lee. ID Number: VAL-001. Date: 2024-01-01.",
+        confidence: 0.95
+      })
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 202);
+    assert.equal(body.event, "document.validation.completed");
+    assert.equal(typeof body.result.valid, "boolean");
+    assert.equal(typeof body.result.score, "number");
+    assert.equal(eventBus.published.length, 1);
+  });
+
+  it("review assign/approve/reject routes publish correct events", async () => {
+    const eventBus = new CapturingEventBus();
+    const baseUrl = await startApp((app) => {
+      app.use(express.json());
+      app.use(requestIdMiddleware);
+      app.use(reviewRoutes(eventBus, new Logger("test-gateway")));
+    });
+    const token = jwt.sign({ sub: "admin-1", roles: ["admin"] }, env.JWT_SECRET, {
+      expiresIn: "15m"
+    });
+    const headers = {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`
+    };
+
+    const assignRes = await fetch(`${baseUrl}/api/review/assign`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ reviewId: "review-route-1", reviewerId: "reviewer-route-1" })
+    });
+    assert.equal(assignRes.status, 202);
+    assert.equal((await assignRes.json()).event, "review.assigned");
+
+    const approveRes = await fetch(`${baseUrl}/api/review/approve`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ reviewId: "review-route-2" })
+    });
+    assert.equal(approveRes.status, 202);
+    assert.equal((await approveRes.json()).event, "review.approved");
+
+    const rejectRes = await fetch(`${baseUrl}/api/review/reject`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ reviewId: "review-route-3", reason: "Poor quality" })
+    });
+    assert.equal(rejectRes.status, 202);
+    assert.equal((await rejectRes.json()).event, "review.rejected");
+
+    assert.equal(eventBus.published.length, 3);
+  });
+
+  it("CRM sync route publishes crm.sync events", async () => {
+    const eventBus = new CapturingEventBus();
+    const baseUrl = await startApp((app) => {
+      app.use(express.json());
+      app.use(requestIdMiddleware);
+      app.use(crmRoutes(eventBus, new Logger("test-gateway")));
+      const testErrorHandler: express.ErrorRequestHandler = (error, req, res, _next) => {
+        res.status(500).json({ error: "internal_server_error", message: error.message, requestId: req.requestId });
+      };
+      app.use(testErrorHandler);
+    });
+    const token = jwt.sign({ sub: "admin-1", roles: ["service"] }, env.JWT_SECRET, {
+      expiresIn: "15m"
+    });
+
+    await prisma.client.create({
+      data: {
+        id: "client-crm-route",
+        name: "CRM Route Test",
+        contactPerson: "CRM Tester",
+        contactEmail: "crm@example.com",
+        jurisdiction: "Singapore",
+        serviceTier: "Professional",
+        clientType: "Corporate",
+        status: "pending",
+        progressPercent: 0,
+        updatedAt: new Date()
+      }
+    });
+
+    const response = await fetch(`${baseUrl}/api/crm/sync`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({ customerId: "client-crm-route" })
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 202);
+    assert.equal(body.event, "crm.sync.completed");
+    assert.ok(body.result.crmReference.startsWith("crm-ref-"));
+    assert.equal(eventBus.published.length, 2);
+    assert.equal(eventBus.published[0]?.eventName, "crm.sync.started");
+    assert.equal(eventBus.published[1]?.eventName, "crm.sync.completed");
+  });
+
+  it("rejects unauthenticated requests to new routes", async () => {
+    const eventBus = new CapturingEventBus();
+    const baseUrl = await startApp((app) => {
+      app.use(express.json());
+      app.use(requestIdMiddleware);
+      app.use(ocrRoutes(eventBus, new Logger("test-gateway")));
+      app.use(validationRoutes(eventBus, new Logger("test-gateway")));
+      app.use(reviewRoutes(eventBus, new Logger("test-gateway")));
+      app.use(crmRoutes(eventBus, new Logger("test-gateway")));
+    });
+
+    const endpoints = [
+      "/api/ocr/extract",
+      "/api/validation/document",
+      "/api/review/assign",
+      "/api/review/approve",
+      "/api/review/reject",
+      "/api/crm/sync"
+    ];
+
+    for (const endpoint of endpoints) {
+      const response = await fetch(`${baseUrl}${endpoint}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({})
+      });
+      assert.equal(response.status, 401, `Expected 401 for ${endpoint}`);
+    }
+
+    assert.equal(eventBus.published.length, 0);
+  });
+
+  it("OpenAPI documentation includes all new endpoints", async () => {
+    const baseUrl = await startApp((app) => {
+      app.use(docsRoutes());
+    });
+
+    const response = await fetch(`${baseUrl}/openapi.json`);
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.ok(body.paths["/api/ocr/extract"]);
+    assert.ok(body.paths["/api/validation/document"]);
+    assert.ok(body.paths["/api/review/assign"]);
+    assert.ok(body.paths["/api/review/approve"]);
+    assert.ok(body.paths["/api/review/reject"]);
+    assert.ok(body.paths["/api/crm/sync"]);
+    assert.ok(body.paths["/api/events/replay"]);
+  });
+});
+
+describe("end-to-end document processing pipeline", () => {
+  it("Scenario: document flows through OCR → validation → review → approval", async () => {
+    const ocrResult = await extractDocumentText(
+      "doc-e2e-pipeline",
+      "Full name: Pipeline User. ID Number: PIPE-12345. Registration: REG-E2E. Date: 2024-06-01. Expiry: 2034-06-01."
+    );
+    assert.ok(ocrResult.confidence >= 0.8);
+
+    const validationResult = await validateDocument(
+      ocrResult.documentId,
+      ocrResult.extractedText,
+      ocrResult.confidence
+    );
+    assert.equal(validationResult.valid, true);
+    assert.ok(validationResult.score >= 80);
+
+    const reviewResult = await evaluateReview(
+      ocrResult.documentId,
+      validationResult.score,
+      validationResult.valid
+    );
+
+    assert.ok(["approved", "assigned"].includes(reviewResult.decision));
+
+    if (reviewResult.decision === "approved") {
+      const faceResult = await verifyFace(reviewResult.reviewId);
+      assert.ok(faceResult.verificationId.startsWith("face-"));
+
+      const crmResult = await syncCrmRecord("client-e2e-pipeline");
+      assert.ok(crmResult.crmReference.startsWith("crm-ref-"));
+    }
   });
 });
 

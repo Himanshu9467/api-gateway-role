@@ -22,6 +22,7 @@ export interface RedisEventBusOptions {
   connection: Redis;
   defaultSubscribers?: Partial<Record<EventName, string[]>>;
   logger?: EventLogger;
+  concurrency?: number;
 }
 
 export class RedisEventBus implements EventBus {
@@ -63,7 +64,7 @@ export class RedisEventBus implements EventBus {
       {
         eventName,
         consumerName,
-        concurrency: 5
+        concurrency: this.options.concurrency ?? 5
       },
       handler,
       {
@@ -88,7 +89,16 @@ export class RedisEventBus implements EventBus {
       "client.created",
       "client.onboarded",
       "document.uploaded",
-      "workflow.completed"
+      "workflow.completed",
+      "document.ocr.completed",
+      "document.validation.completed",
+      "review.assigned",
+      "review.approved",
+      "review.rejected",
+      "crm.sync.started",
+      "crm.sync.completed",
+      "face.verification.completed",
+      "kyc.completed"
     ];
     const pairs = await Promise.all(
       events.map(async (eventName) => {

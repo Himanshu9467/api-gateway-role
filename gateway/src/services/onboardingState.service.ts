@@ -162,6 +162,45 @@ export async function getOnboardingState(
   return state ? toOnboardingClientState(state) : undefined;
 }
 
+export async function completeKyc(
+  kycId: string,
+  clientId: string,
+  status: string
+): Promise<{ kycId: string; status: string; clientId: string }> {
+  const timestamp = new Date();
+
+  const progress = await prisma.onboardingProgress.findUnique({
+    where: { clientId }
+  });
+
+  if (progress) {
+    await prisma.onboardingProgress.update({
+      where: { id: progress.id },
+      data: {
+        status: status === "approved" ? "completed" : progress.status,
+        progressPercent: status === "approved" ? 100 : progress.progressPercent,
+        updatedAt: timestamp
+      }
+    });
+
+    await updateClientOnboardingState(clientId, {
+      status: status === "approved" ? "completed" : progress.status as OnboardingStatus,
+      progressPercent: status === "approved" ? 100 : progress.progressPercent,
+      updatedAt: timestamp.toISOString()
+    });
+  }
+
+  await writeAuditLog({
+    action: "kyc.completed",
+    actorType: "service",
+    actorId: "kyc-service",
+    clientId,
+    metadata: { kycId, status }
+  });
+
+  return { kycId, status, clientId };
+}
+
 function toOnboardingClientState(state: {
   clientId: string;
   status: string;

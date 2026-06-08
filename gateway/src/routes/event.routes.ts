@@ -1,11 +1,14 @@
 import { randomUUID } from "crypto";
 import { Router } from "express";
 import type { EventBus } from "@ai-platform/events";
+import { QueueManager, createRedisConnection, type EventName } from "@ai-platform/events";
 import { z } from "zod";
 import { authenticate, requireRoles } from "../middleware/auth";
 import { appMetrics } from "../observability/appMetrics";
 import { withTraceMetadata } from "../observability/tracing";
 import type { Logger } from "../observability/logger";
+import { env } from "../config/env";
+import { writeAuditLog } from "../services/audit.service";
 
 const clientCreatedRequestSchema = z.object({
   clientId: z.string().min(8).optional(),
@@ -140,6 +143,82 @@ export function eventRoutes(eventBus: EventBus, logger: Logger): Router {
           correlationId: event.correlationId,
           targets: ["crm-service", "onboarding-service"]
         });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
+
+  router.post(
+    "/api/events/replay",
+    authenticate,
+    requireRoles(["admin", "service"]),
+    async (req, res, next) => {
+      try {
+        const replaySchema = z.object({
+          eventName: z.string().min(1),
+          consumerName: z.string().min(1),
+          jobId: z.string().min(1)
+        });
+        const body = replaySchema.parse(req.body);
+
+        const redis = createRedisConnection({ url: env.REDIS_URL });
+        const queueManager = new QueueManager(redis);
+
+        try {
+          const result = await queueManager.replayJob(
+            body.eventName as EventName,
+            body.consumerName,
+            body.jobId
+          );
+
+          if (!result.replayed) {
+            res.status(404).json({
+              requestId: req.requestId,
+              status: "not_found",
+              message: `Job ${body.jobId} not found in DLQ for ${body.eventName}/${body.consumerName}`
+            });
+            return;
+          }
+
+          await writeAuditLog({
+            action: "event.replayed",
+            actorType: req.user?.authType === "api-key" ? "service" : "user",
+            actorId: req.user?.id,
+            metadata: {
+              eventName: body.eventName,
+              consumerName: body.consumerName,
+              originalJobId: body.jobId,
+              newJobId: result.newJobId
+            }
+          });
+
+          logger.info("event.route.replay.completed", {
+            requestId: req.requestId,
+            route: req.originalUrl,
+            eventName: body.eventName,
+            consumerName: body.consumerName,
+            originalJobId: body.jobId,
+            newJobId: result.newJobId,
+            status: "replayed"
+          });
+          appMetrics.increment("gateway_events_replayed_total", {
+            event: body.eventName,
+            consumer: body.consumerName
+          });
+
+          res.status(200).json({
+            requestId: req.requestId,
+            status: "replayed",
+            originalJobId: body.jobId,
+            newJobId: result.newJobId,
+            eventName: body.eventName,
+            consumerName: body.consumerName
+          });
+        } finally {
+          await queueManager.close();
+          redis.disconnect();
+        }
       } catch (error) {
         next(error);
       }

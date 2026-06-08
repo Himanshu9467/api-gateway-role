@@ -245,6 +245,162 @@ export const openApiDocument = {
           }
         }
       }
+    },
+    "/api/ocr/extract": {
+      post: {
+        summary: "Extract text from document via OCR",
+        security: [{ bearerAuth: [] }, { serviceApiKey: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              example: {
+                documentId: "doc-12345678",
+                fileContent: "Sample document text content",
+                clientId: "client-12345"
+              }
+            }
+          }
+        },
+        responses: {
+          "202": { description: "OCR extraction accepted and document.ocr.completed event queued" },
+          "401": { description: "Missing or invalid authentication" },
+          "403": { description: "Insufficient role" }
+        }
+      }
+    },
+    "/api/validation/document": {
+      post: {
+        summary: "Validate extracted document content",
+        security: [{ bearerAuth: [] }, { serviceApiKey: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              example: {
+                documentId: "doc-12345678",
+                extractedText: "Full name: John Doe. ID: ABC123456",
+                confidence: 0.92
+              }
+            }
+          }
+        },
+        responses: {
+          "202": { description: "Validation completed and document.validation.completed event queued" },
+          "401": { description: "Missing or invalid authentication" },
+          "403": { description: "Insufficient role" }
+        }
+      }
+    },
+    "/api/review/assign": {
+      post: {
+        summary: "Assign a review to a reviewer",
+        security: [{ bearerAuth: [] }, { serviceApiKey: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              example: {
+                reviewId: "review-12345678",
+                reviewerId: "reviewer-12345"
+              }
+            }
+          }
+        },
+        responses: {
+          "202": { description: "Review assigned and review.assigned event queued" },
+          "401": { description: "Missing or invalid authentication" },
+          "403": { description: "Insufficient role" }
+        }
+      }
+    },
+    "/api/review/approve": {
+      post: {
+        summary: "Approve a review",
+        security: [{ bearerAuth: [] }, { serviceApiKey: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              example: {
+                reviewId: "review-12345678"
+              }
+            }
+          }
+        },
+        responses: {
+          "202": { description: "Review approved and review.approved event queued" },
+          "401": { description: "Missing or invalid authentication" },
+          "403": { description: "Insufficient role" }
+        }
+      }
+    },
+    "/api/review/reject": {
+      post: {
+        summary: "Reject a review",
+        security: [{ bearerAuth: [] }, { serviceApiKey: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              example: {
+                reviewId: "review-12345678",
+                reason: "Document quality insufficient"
+              }
+            }
+          }
+        },
+        responses: {
+          "202": { description: "Review rejected and review.rejected event queued" },
+          "401": { description: "Missing or invalid authentication" },
+          "403": { description: "Insufficient role" }
+        }
+      }
+    },
+    "/api/crm/sync": {
+      post: {
+        summary: "Trigger CRM synchronization for a customer",
+        security: [{ bearerAuth: [] }, { serviceApiKey: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              example: {
+                customerId: "client-12345678"
+              }
+            }
+          }
+        },
+        responses: {
+          "202": { description: "CRM sync completed and crm.sync.completed event queued" },
+          "401": { description: "Missing or invalid authentication" },
+          "403": { description: "Insufficient role" }
+        }
+      }
+    },
+    "/api/events/replay": {
+      post: {
+        summary: "Replay a failed event from the dead letter queue",
+        security: [{ bearerAuth: [] }, { serviceApiKey: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              example: {
+                eventName: "document.uploaded",
+                consumerName: "ocr-service",
+                jobId: "event-abc123-ocr-service"
+              }
+            }
+          }
+        },
+        responses: {
+          "200": { description: "Event replayed successfully" },
+          "404": { description: "Job not found in DLQ" },
+          "401": { description: "Missing or invalid authentication" },
+          "403": { description: "Insufficient role" }
+        }
+      }
     }
   }
 } as const;

@@ -5,6 +5,21 @@ import type { EventName, EventQueueStats } from "../types";
 const QUEUE_PREFIX = "events";
 const DLQ_SUFFIX = "dlq";
 
+/**
+ * Custom retry delays matching the specified policy:
+ * Attempt 1 → immediate (0ms)
+ * Attempt 2 → 5 000ms
+ * Attempt 3 → 15 000ms
+ * Attempt 4 → 30 000ms
+ * Attempt 5 → DLQ (handled by EventSubscriber)
+ */
+const RETRY_DELAYS_MS = [0, 5_000, 15_000, 30_000];
+
+export function customBackoffDelay(attemptsMade: number): number {
+  const index = Math.min(attemptsMade - 1, RETRY_DELAYS_MS.length - 1);
+  return RETRY_DELAYS_MS[index] ?? 30_000;
+}
+
 export class QueueManager {
   private readonly queues = new Map<string, Queue>();
   private readonly queueEvents = new Map<string, QueueEvents>();
@@ -63,6 +78,44 @@ export class QueueManager {
     };
   }
 
+  async getFailedJobs(
+    eventName: EventName,
+    consumerName: string,
+    start = 0,
+    end = 50
+  ): Promise<Array<{ jobId: string; data: unknown; failedReason?: string; attemptsMade: number }>> {
+    const dlq = this.getDlq(eventName, consumerName);
+    const jobs = await dlq.getJobs(["waiting", "failed"], start, end);
+    return jobs.map((job) => ({
+      jobId: job.id ?? "unknown",
+      data: job.data,
+      failedReason: (job.data as Record<string, unknown>)?.failedReason as string | undefined,
+      attemptsMade: (job.data as Record<string, unknown>)?.attemptsMade as number ?? 0
+    }));
+  }
+
+  async replayJob(
+    eventName: EventName,
+    consumerName: string,
+    jobId: string
+  ): Promise<{ replayed: boolean; newJobId?: string }> {
+    const dlq = this.getDlq(eventName, consumerName);
+    const job = await dlq.getJob(jobId);
+    if (!job) {
+      return { replayed: false };
+    }
+
+    const eventData = (job.data as Record<string, unknown>)?.event ?? job.data;
+    const queue = this.getQueue(eventName, consumerName);
+    const newJob = await queue.add(`${eventName}.replay`, eventData, {
+      jobId: `replay-${jobId}-${Date.now()}`
+    });
+
+    await job.remove();
+
+    return { replayed: true, newJobId: newJob.id };
+  }
+
   async close(): Promise<void> {
     await Promise.all([
       ...Array.from(this.queueEvents.values()).map((events) => events.close()),
@@ -81,8 +134,7 @@ export class QueueManager {
       defaultJobOptions: {
         attempts: 5,
         backoff: {
-          type: "exponential",
-          delay: 1000
+          type: "custom"
         },
         removeOnComplete: {
           age: 24 * 60 * 60,
@@ -106,3 +158,4 @@ export class QueueManager {
     };
   }
 }
+

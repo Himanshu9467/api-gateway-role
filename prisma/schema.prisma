@@ -19,13 +19,13 @@ model Client {
   progressPercent Int                 @default(0)
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
-  documents       Document[]
   activities      Activity[]
-  chatMessages    ChatMessage[]
-  onboarding      OnboardingProgress?
-  crmRecord       CRMRecord?
-  dataRoom        DataRoom?
   auditLogs       AuditLog[]
+  crmRecord       CRMRecord?
+  chatMessages    ChatMessage[]
+  dataRoom        DataRoom?
+  documents       Document[]
+  onboarding      OnboardingProgress?
 
   @@index([status, updatedAt])
   @@index([updatedAt])
@@ -37,12 +37,12 @@ model User {
   name                    String
   passwordHash            String
   roles                   String                   @default("user")
-  emailVerifiedAt         DateTime?
   createdAt               DateTime                 @default(now())
   updatedAt               DateTime                 @updatedAt
-  refreshTokens           RefreshToken[]
-  passwordResetTokens     PasswordResetToken[]
+  emailVerifiedAt         DateTime?
   emailVerificationTokens EmailVerificationToken[]
+  passwordResetTokens     PasswordResetToken[]
+  refreshTokens           RefreshToken[]
 
   @@index([email])
 }
@@ -103,33 +103,33 @@ model Document {
   fileName        String
   fileSize        Int      @default(0)
   mimeType        String
-  storageProvider String   @default("local")
-  storagePath     String   @default("")
-  documentUrl     String   @default("")
-  bucket          String?
-  storageKey      String?
-  checksum        String   @default("")
-  storageMetadata String   @default("{}")
   status          String
   uploadedAt      DateTime @default(now())
   rejectionReason String?
+  storageProvider String   @default("local")
+  storagePath     String   @default("")
+  documentUrl     String   @default("")
+  storageMetadata String   @default("{}")
+  bucket          String?
+  storageKey      String?
+  checksum        String   @default("")
   client          Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
 
   @@index([clientId, stepKey, uploadedAt])
 }
 
 model AuditLog {
-  id          String   @id
-  action      String
-  actorId     String?
-  actorType   String   @default("user")
-  clientId    String?
-  documentId  String?
-  ipAddress   String?
-  userAgent   String?
-  metadata    String   @default("{}")
-  createdAt   DateTime @default(now())
-  client      Client?  @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  id         String   @id
+  action     String
+  actorId    String?
+  actorType  String   @default("user")
+  clientId   String?
+  documentId String?
+  ipAddress  String?
+  userAgent  String?
+  metadata   String   @default("{}")
+  createdAt  DateTime @default(now())
+  client     Client?  @relation(fields: [clientId], references: [id])
 
   @@index([action, createdAt])
   @@index([actorId, createdAt])
@@ -144,7 +144,7 @@ model Activity {
   description String
   createdAt   DateTime @default(now())
   type        String
-  client      Client?  @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  client      Client?  @relation(fields: [clientId], references: [id])
 
   @@index([clientId, createdAt])
   @@index([createdAt])
@@ -170,16 +170,16 @@ model OnboardingProgress {
   currentStep     String                    @default("identity")
   startedAt       DateTime                  @default(now())
   updatedAt       DateTime                  @updatedAt
-  client          Client                    @relation(fields: [clientId], references: [id], onDelete: Cascade)
   completedSteps  OnboardingCompletedStep[]
+  client          Client                    @relation(fields: [clientId], references: [id], onDelete: Cascade)
 }
 
 model OnboardingCompletedStep {
-  id         String             @id
-  progressId String
-  stepKey    String
-  completedAt DateTime          @default(now())
-  progress   OnboardingProgress @relation(fields: [progressId], references: [id], onDelete: Cascade)
+  id          String             @id
+  progressId  String
+  stepKey     String
+  completedAt DateTime           @default(now())
+  progress    OnboardingProgress @relation(fields: [progressId], references: [id], onDelete: Cascade)
 
   @@unique([progressId, stepKey])
 }
@@ -191,8 +191,8 @@ model CRMRecord {
   plan        String
   createdBy   String
   createdAt   DateTime                 @default(now())
-  client      Client                   @relation(fields: [clientId], references: [id], onDelete: Cascade)
   documents   CRMDocumentAssociation[]
+  client      Client                   @relation(fields: [clientId], references: [id], onDelete: Cascade)
 }
 
 model CRMDocumentAssociation {

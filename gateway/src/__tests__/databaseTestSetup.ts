@@ -3,6 +3,7 @@ import { prisma } from "../services/database.service";
 export async function resetTestDatabase(): Promise<void> {
   await prisma.$executeRawUnsafe("PRAGMA foreign_keys = OFF");
   for (const table of [
+    "DeadLetterEvent",
     "EmailVerificationToken",
     "PasswordResetToken",
     "RefreshToken",
@@ -201,6 +202,18 @@ export async function resetTestDatabase(): Promise<void> {
       CONSTRAINT "AuditLog_clientId_fkey" FOREIGN KEY ("clientId") REFERENCES "Client" ("id") ON DELETE SET NULL ON UPDATE CASCADE
     )
   `);
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE "DeadLetterEvent" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "eventName" TEXT NOT NULL,
+      "consumerName" TEXT NOT NULL,
+      "eventData" TEXT NOT NULL DEFAULT '{}',
+      "failedReason" TEXT,
+      "attemptsMade" INTEGER NOT NULL DEFAULT 0,
+      "failedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "replayedAt" DATETIME
+    )
+  `);
 
   await prisma.$executeRawUnsafe('CREATE UNIQUE INDEX "User_email_key" ON "User"("email")');
   await prisma.$executeRawUnsafe('CREATE INDEX "User_email_idx" ON "User"("email")');
@@ -275,5 +288,8 @@ export async function resetTestDatabase(): Promise<void> {
   );
   await prisma.$executeRawUnsafe(
     'CREATE INDEX "AuditLog_documentId_createdAt_idx" ON "AuditLog"("documentId", "createdAt")'
+  );
+  await prisma.$executeRawUnsafe(
+    'CREATE INDEX "DeadLetterEvent_eventName_consumerName_idx" ON "DeadLetterEvent"("eventName", "consumerName")'
   );
 }

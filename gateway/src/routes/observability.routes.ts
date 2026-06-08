@@ -3,12 +3,27 @@ import { env } from "../config/env";
 import type { MetricsRegistry } from "../observability/metrics";
 import { appMetrics } from "../observability/appMetrics";
 import { sendAlert } from "../services/alerting.service";
+import type { EventBus } from "@ai-platform/events";
 
-export function observabilityRoutes(metrics: MetricsRegistry): Router {
+export function observabilityRoutes(metrics: MetricsRegistry, eventBus?: EventBus): Router {
   const router = Router();
 
-  router.get("/metrics", (_req, res) => {
-    res.type("text/plain; version=0.0.4").send(metrics.renderPrometheus());
+  router.get("/metrics", async (_req, res, next) => {
+    try {
+      if (eventBus?.queueStats) {
+        const stats = await eventBus.queueStats();
+        for (const item of stats) {
+          const labels = { event: item.eventName, consumer: item.consumerName };
+          appMetrics.setGauge("gateway_worker_queue_waiting", labels, item.counts.waiting);
+          appMetrics.setGauge("gateway_worker_queue_active", labels, item.counts.active);
+          appMetrics.setGauge("gateway_worker_queue_failed", labels, item.counts.failed);
+          appMetrics.setGauge("gateway_worker_dlq_count", labels, item.dlqCounts.waiting + item.dlqCounts.failed);
+        }
+      }
+      res.type("text/plain; version=0.0.4").send(metrics.renderPrometheus());
+    } catch (error) {
+      next(error);
+    }
   });
 
   router.get("/metrics/workers", (_req, res) => {

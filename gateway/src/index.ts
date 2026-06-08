@@ -5,7 +5,7 @@ import helmet from "helmet";
 import {
   JsonEventLogger,
   createEventBus,
-  createRedisConnection
+  RedisConnectionFactory
 } from "@ai-platform/events";
 import { env } from "./config/env";
 import { serviceRoutes } from "./config/services.config";
@@ -27,6 +27,10 @@ import { authRoutes } from "./routes/auth.routes";
 import { chatRoutes } from "./routes/chat.routes";
 import { dashboardRoutes } from "./routes/dashboard.routes";
 import { onboardingFrontendRoutes } from "./routes/onboardingFrontend.routes";
+import { ocrRoutes } from "./routes/ocr.routes";
+import { validationRoutes } from "./routes/validation.routes";
+import { reviewRoutes } from "./routes/review.routes";
+import { crmRoutes } from "./routes/crm.routes";
 import { CircuitBreakerService } from "./services/circuitBreaker.service";
 import { HealthService } from "./services/health.service";
 import { registerProxyRoutes } from "./services/proxy.service";
@@ -52,7 +56,7 @@ async function bootstrap(): Promise<void> {
     throw error;
   }
   const metrics = new MetricsRegistry();
-  const redis = env.EVENT_DRIVER === "redis" ? createRedisConnection({ url: env.REDIS_URL }) : undefined;
+  const redis = env.EVENT_DRIVER === "redis" ? RedisConnectionFactory.getSharedConnection({ url: env.REDIS_URL }) : undefined;
   redis?.on("error", (error) => {
     logger.error("redis.connection.error", {
       error: error.message || error.name || "Redis connection failed"
@@ -72,7 +76,12 @@ async function bootstrap(): Promise<void> {
     redisConnection: redis,
     defaultSubscribers: {
       "client.created": ["crm-service", "data-room-service", "onboarding-service"],
-      "document.uploaded": ["crm-service", "onboarding-service"]
+      "document.uploaded": ["crm-service", "onboarding-service", "ocr-service"],
+      "document.ocr.completed": ["validation-service"],
+      "document.validation.completed": ["review-service"],
+      "review.approved": ["face-verification-service"],
+      "face.verification.completed": ["crm-sync-service"],
+      "crm.sync.completed": ["kyc-service"]
     },
     logger: new JsonEventLogger(env.SERVICE_NAME)
   });
@@ -102,13 +111,17 @@ async function bootstrap(): Promise<void> {
     })
   );
   app.use(docsRoutes());
-  app.use(observabilityRoutes(metrics));
+  app.use(observabilityRoutes(metrics, eventBus));
   app.use(healthRoutes(healthService, eventBus));
   app.use(authRoutes());
   app.use(dashboardRoutes(eventBus));
   app.use(chatRoutes());
   app.use(onboardingFrontendRoutes(eventBus));
   app.use(eventRoutes(eventBus, logger));
+  app.use(ocrRoutes(eventBus, logger));
+  app.use(validationRoutes(eventBus, logger));
+  app.use(reviewRoutes(eventBus, logger));
+  app.use(crmRoutes(eventBus, logger));
   app.use(orchestrationRoutes(orchestrator));
 
   registerProxyRoutes(app, serviceRoutes, circuitBreaker, serviceRegistry, logger);
@@ -128,12 +141,28 @@ async function bootstrap(): Promise<void> {
 
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
     logger.warn("gateway.shutdown.started", { signal });
+
+    // Safety timeout of 15 seconds to force exit if clean-up hangs
+    const forceExitTimeout = setTimeout(() => {
+      logger.error("gateway.shutdown.timeout", { signal });
+      process.exit(1);
+    }, 15_000);
+    forceExitTimeout.unref();
+
     server.close(async () => {
-      serviceRegistry.stopPolling();
-      await eventBus.close();
-      redis?.disconnect();
-      logger.warn("gateway.shutdown.completed", { signal });
-      process.exit(0);
+      try {
+        serviceRegistry.stopPolling();
+        await eventBus.close();
+        await RedisConnectionFactory.closeAll();
+        logger.warn("gateway.shutdown.completed", { signal });
+        clearTimeout(forceExitTimeout);
+        process.exit(0);
+      } catch (error) {
+        logger.error("gateway.shutdown.failed", {
+          error: error instanceof Error ? error.message : String(error)
+        });
+        process.exit(1);
+      }
     });
   };
 

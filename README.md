@@ -1,603 +1,388 @@
-# AI Platform Communication Backbone
+# AI Platform API Gateway & Event-Orchestration Backbone
 
-Production-grade TypeScript API gateway and Redis/BullMQ event backbone for microservice communication.
+This repository houses the production-grade, highly resilient API Gateway and asynchronous Event Backbone built for the AI Platform. It is engineered using TypeScript, Node.js, Express, and a custom Redis-backed BullMQ event pipeline to orchestrate complex onboarding and backend workflows.
 
-## Project Status
+## Purpose
 
-The API Gateway and event system are working and covered by integration tests. The gateway now supports both backend service communication and the frontend-facing dashboard integration through authenticated API routes backed by PostgreSQL persistence via Prisma.
+The platform serves as the central traffic controller, API Gateway, and message broker for the onboarding ecosystem. It coordinates secure, high-throughput document ingestion, background OCR processing, compliance validation, manual/automated review flows, identity verification, and third-party CRM state synchronization across distributed microservices.
 
-Completed:
+## Main Features
 
-- API gateway entry point on `http://localhost:4000`
-- Proxy routing for onboarding, CRM, and data-room services
-- JWT authentication, service API keys, and RBAC middleware
-- Frontend-facing auth, dashboard, client, onboarding, and chat API contracts
-- Redis-backed rate limiting with in-memory fallback
-- Structured JSON request and event logs with request/correlation IDs
-- Redis/BullMQ event publishing and worker consumption
-- PostgreSQL persistence with Prisma for clients, documents, onboarding progress, CRM records, and data rooms
-- Independent consumer retries, idempotency handling, and dead-letter queues
-- Event flows for `client.created` and `document.uploaded`
-- AI orchestration command route for onboarding workflows
-- Service discovery with round-robin routing, health polling, and circuit breaking
-- Gateway, downstream service, and event queue health endpoints
-- Prometheus-compatible metrics and OpenAPI route documentation
-- Integration tests for gateway auth, RBAC, rate limiting, event publishing, frontend-facing routes, docs, and metrics
+- **Decoupled Event Orchestration:** A transactional, custom-scheduled event pipeline passing messages between isolated worker threads.
+- **Robust Security & RBAC:** Comprehensive JSON Web Token (JWT) management, identity federation (Cognito, Keycloak, Auth0), constant-time API key comparison, secure hashing of reset tokens, and refresh token rotation with family revocation.
+- **Resilient Queue Processing:** Custom retry backoffs, automatic Dead Letter Queue (DLQ) redirection, dynamic replay routes, and distributed idempotency locking.
+- **Production Hardening:** Managed connection pooling, configurable worker concurrency limits, safe signal handling (SIGINT/SIGTERM) with safety execution timeouts, and pre-boot environment validation checks.
+- ** Observability & Diagnostics:** Live metrics endpoints exposing Prometheus gauges, tracing spans via OpenTelemetry, and structured JSON logs tagged with Correlation and Request IDs.
 
-## Architecture
+---
+
+## Architecture Overview
+
+The platform uses a decoupled, event-driven pattern where the API Gateway persists transactional records and dispatches messages to Redis/BullMQ queues. Isolated backend consumers (workers) pull from these queues, process tasks using specialized state services, and enqueue successor events.
+
+```
+       +---------------------------------------------+
+       |             Vite React Frontend             |
+       +---------------------------------------------+
+                              | HTTP
+                              v
+       +---------------------------------------------+
+       |        Express API Gateway (Port 4000)      |
+       +---------------------------------------------+
+          | Prisma Client              | Shared Client
+          v                            v
+  +---------------+            +---------------------+
+  |  PostgreSQL   |            | RedisConnectionPool |
+  +---------------+            +---------------------+
+                                       |
+                   +-------------------+-------------------+
+                   | Shared Conn                           | Duplicated Worker Conn
+                   v                                       v
+         +--------------------+                  +--------------------+
+         |   Queues & DLQs    |                  |  BullMQ Workers    |
+         | (Enqueues Events)  |                  | (BRPOP / Polling)  |
+         +--------------------+                  +--------------------+
+```
+
+### Event-Driven Onboarding Workflow
+
+The complete end-to-end document onboarding chain follows this sequence:
+
+```mermaid
+graph TD
+    Client[HTTP Client Upload] -->|POST /api/onboarding/.../upload| Gateway[API Gateway]
+    Gateway -->|Publish| DocUploaded[document.uploaded]
+    
+    %% Event Pipeline Chaining
+    DocUploaded -->|Consumer: ocr-service| OCRWorker[OCR Worker]
+    OCRWorker -->|Extract & Publish| DocOcrComp[document.ocr.completed]
+    
+    DocOcrComp -->|Consumer: validation-service| ValWorker[Validation Worker]
+    ValWorker -->|Validate & Publish| DocValComp[document.validation.completed]
+    
+    DocValComp -->|Consumer: review-service| RevWorker[Review Worker]
+    
+    RevWorker -->|Auto-Reject / Manual Reject| RevRej[review.rejected]
+    RevWorker -->|Manual Assign| RevAss[review.assigned]
+    RevWorker -->|Auto-Approved / Approved| RevApp[review.approved]
+    
+    RevApp -->|Consumer: face-verification-service| FaceWorker[Face Verification Worker]
+    FaceWorker -->|Verify & Publish| FaceComp[face.verification.completed]
+    
+    FaceComp -->|Consumer: crm-sync-service| CRMWorker[CRM Sync Worker]
+    CRMWorker -->|Sync Started| CrmStart[crm.sync.started]
+    CRMWorker -->|Sync & Publish| CrmComp[crm.sync.completed]
+    
+    CrmComp -->|Consumer: kyc-service| KYCWorker[KYC Completion Worker]
+    KYCWorker -->|Finalize & Publish| KycComp[kyc.completed]
+```
+
+---
+
+## Features
+
+### Security & Traffic Management
+- **Authentication:** Standard JWT token issuance and validation, alongside dynamic JWKS certificate verification for identity federation (Cognito, Auth0, Keycloak).
+- **RBAC Enforcement:** Route-level middleware checking user and service roles (`admin`, `user`, `service`).
+- **Constant-Time Verification:** API Key checks are done using `crypto.timingSafeEqual` to avoid side-channel profiling.
+- **Refresh Token Family Rotation:** Invalidation of entire session chains if refresh token reuse is detected.
+- **Secure Token Hashing:** Reset and verification tokens are kept hashed (SHA-256) at rest, preventing database-compromise hijack loops.
+
+### Processing & Worker Services
+- **OCR Processing:** Evaluates document content and scores OCR confidence.
+- **Document Validation:** Validates format, length, structural metadata, and field requirements.
+- **Review Workflow:** Route-based manual approvals/rejections combined with an automated scoring engine.
+- **Face Verification:** Mimics facial biometric authentication against uploaded identity cards.
+- **CRM Synchronization:** Pushes state records to the customer database and locks IDs.
+- **KYC Completion:** Triggers onboarding finalization and updates PostgreSQL tables.
+
+### Reliability & Resiliency
+- **Retry Logic:** Automatic retry handler with configurable intervals (`0ms → 5s → 15s → 30s`).
+- **Dead Letter Queue (DLQ):** Failed jobs are sent to an isolated dead-letter queue after 5 failed attempts.
+- **Event Replay:** Administrative endpoint allows replaying entries from the DLQ back to active workers.
+
+### Diagnostics & Monitoring
+- **Metrics Endpoint:** Exposes Prometheus gauges tracking backlog queues, active loads, and DLQ levels.
+- **OpenAPI/Swagger:** Standard API blueprints are available at `/openapi.json`.
+- **Tracing Spans:** OpenTelemetry spans map events across microservice boundaries.
+
+---
+
+## Project Structure
 
 ```text
 api-gateway-project/
-  gateway/                 # Express + TypeScript API Gateway
-    src/
-      config/              # env and service registry config
-      docs/                # OpenAPI document
-      examples/            # mock services and worker consumers
-      middleware/          # auth, RBAC, rate limit, logging, error handling
-      observability/       # JSON logger and Prometheus metrics
-      orchestrator/        # command parser and onboarding workflow
-      routes/              # gateway route modules
-      services/            # proxy, health, circuit breaker, service registry
-      utils/               # request ID utilities
-  packages/
-    events/                # @ai-platform/events Redis/BullMQ event package
-  prisma/                  # Prisma schema, migrations, and seed data
-  crm/                     # lightweight CRM service mock
-  onboarding/              # lightweight onboarding service mock
-  data-room/               # lightweight data-room service mock
-  frontend/                # React client consuming gateway APIs
+├── crm/                 # CRM downstream mock service
+├── data-room/           # Data room downstream mock service
+├── docs/                # Architectural, deployment, and operational docs
+├── frontend/            # React + Vite client frontend UI
+├── gateway/             # Express + TypeScript API Gateway
+│   ├── src/
+│   │   ├── __tests__/   # Integration tests
+│   │   ├── auth/        # Auth0, Keycloak, Cognito handlers
+│   │   ├── config/      # Environment variables & service registry configs
+│   │   ├── docs/        # OpenAPI spec documentation
+│   │   ├── examples/    # OCR, Validation, Review, Face, CRM, KYC consumers
+│   │   ├── middleware/  # Auth, rate-limiter, logging, error-handling middlewares
+│   │   ├── observability/# prometheus exporter & OpenTelemetry tracing bootstrap
+│   │   ├── orchestrator/# Command parser & workflow engine
+│   │   ├── routes/      # Gateway API controllers
+│   │   ├── services/    # Health, database clients, and service registries
+│   │   └── utils/       # Request ID decorators
+├── onboarding/          # Onboarding downstream mock service
+├── packages/
+│   └── events/          # @ai-platform/events Redis/BullMQ monorepo package
+├── prisma/              # Schema declarations, postgres migrations, SQLite test client
+└── storage/             # Local upload storage directory
 ```
 
-## Runtime Services
+---
 
-- API Gateway: `http://localhost:4000`
-- Redis: `redis://localhost:6379`
-- PostgreSQL: `postgresql://postgres:postgres@localhost:5432/ai_platform?schema=public`
-- Data-room service: `http://localhost:3001`
-- Onboarding service: `http://localhost:3002`
-- CRM service: `http://localhost:3003`
+## Prerequisites
 
-Proxy routes:
+| Software | Version Required | Tested Version |
+|---|---|---|
+| **Node.js** | $\ge 20.0.0$ | v25.6.0 |
+| **npm** | $\ge 10.0.0$ | v10.9.2 |
+| **Redis** | $\ge 6.2$ | v7.2.4 (Alpine) |
+| **PostgreSQL**| $\ge 14.0$ | v16.1 (Alpine) |
 
-- `/api/onboarding/*` -> onboarding service
-- `/api/crm/*` -> CRM service
-- `/api/data-room/*` -> data-room service
+---
 
-## Technology Stack
+## Environment Variables
 
-- Node.js
-- TypeScript
-- Express
-- Redis
-- BullMQ
-- Docker Compose
-- PostgreSQL
-- Prisma ORM
-- Zod
-- JWT
-- Prometheus-style metrics
+Copy `.env.example` to `.env` at the repository root. The entire monorepo uses this single environment file.
 
-## Setup
+```ini
+# Core Variables
+NODE_ENV=development
+PORT=4000
+SERVICE_NAME=api-gateway
 
-Install dependencies:
+# Database & Persistent Storage
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ai_platform?schema=public
 
+# Security Settings
+JWT_SECRET=dev-only-change-this-secret
+SERVICE_API_KEYS=crm-sync-service:api-key-crm,kyc-service:api-key-kyc,admin-service:api-key-admin
+
+# Redis Configurations
+REDIS_URL=redis://localhost:6379
+
+# Worker Tuning (New)
+WORKER_CONCURRENCY=5
+
+# Downstream Mock Microservices
+CRM_SERVICE_URL=http://localhost:3003
+ONBOARDING_SERVICE_URL=http://localhost:3002
+DATA_ROOM_SERVICE_URL=http://localhost:3001
+
+# Storage Configurations
+STORAGE_PROVIDER=local
+LOCAL_STORAGE_DIR=storage/documents
+
+# Observability
+WORKER_METRICS_PORT=4100
+TRACING_ENABLED=false
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
+```
+
+---
+
+## Installation
+
+Perform the following steps to bootstrap the workspace:
+
+### 1. Clone & Install
 ```bash
+git clone <repository-url>
+cd api-gateway-project
 npm install
 ```
 
-Start PostgreSQL and Redis:
+### 2. Configure Environment
+```bash
+cp .env.example .env
+```
 
+### 3. Spin up Core Containers
 ```bash
 docker compose up -d postgres redis
 ```
 
-Generate Prisma Client, apply migrations, and seed demo data:
-
+### 4. Setup Database
 ```bash
 npm run prisma:generate
-npm run prisma:deploy
+npm run prisma:migrate
 npm run prisma:seed
 ```
 
-Build the shared event package and gateway:
-
+### 5. Build Workspace
 ```bash
 npm run build
 ```
 
-Run integration tests:
+---
 
-```bash
-npm run prisma:test:prepare
-npm test
-```
+## How to Run the Full Project
 
-Start lightweight downstream mock services for proxy testing:
+To run the full stack, start the gateway and consumer workers. Since they run concurrently, open separate terminal windows:
 
-```bash
-npm run mock:services
-```
-
-Start the gateway in development mode:
-
+### Terminal 1: API Gateway
+Starts the main Express gateway on port `4000`:
 ```bash
 npm run dev:gateway
 ```
 
-Start worker consumers in separate terminals:
-
+### Terminal 2: CRM & Onboarding Services Mocks
+Starts downstream service mocks:
 ```bash
-npm run worker:crm
-npm run worker:onboarding
-npm run worker:data-room
+npm run mock:services
 ```
 
-If you want to run the simple service folders directly instead of `mock:services`, use:
-
+### Terminal 3: OCR Worker Consumer
 ```bash
-node crm/index.js
-node onboarding/index.js
-node data-room/index.js
+npm run worker:ocr
 ```
 
-## Environment
-
-Copy `.env.example` to `.env` at the repository root. The gateway, Prisma scripts, tests, and local Docker Compose workflow all use this single root `.env`; do not create or depend on `gateway/.env`.
-
-Important variables:
-
-- `PORT`
-- `REDIS_URL`
-- `DATABASE_URL`
-- `EVENT_DRIVER`
-- `JWT_SECRET`
-- `SERVICE_API_KEYS`
-- `CRM_SERVICE_URL`
-- `ONBOARDING_SERVICE_URL`
-- `DATA_ROOM_SERVICE_URL`
-- `RATE_LIMIT_WINDOW_MS`
-- `RATE_LIMIT_MAX`
-- `STORAGE_PROVIDER`
-- `LOCAL_STORAGE_DIR`
-- `S3_BUCKET`
-- `S3_REGION`
-- `ALERT_PROVIDER`
-- `EMAIL_PROVIDER`
-- `EMAIL_FROM`
-- `APP_BASE_URL`
-- `SLACK_WEBHOOK_URL`
-- `SECRET_PROVIDER`
-- `AWS_SECRETS_JSON_ID`
-- `WORKER_METRICS_PORT`
-- `TRACING_ENABLED`
-- `OTEL_EXPORTER_OTLP_ENDPOINT`
-
-In production, `DATABASE_URL`, `REDIS_URL`, and a strong `JWT_SECRET` of at least 32 characters are required. The gateway refuses to start in production if these checks fail or Redis is unreachable.
-
-## Gateway APIs
-
-### Auth
-
-These routes issue gateway-compatible JWTs for local integration and demo flows:
-
-- `POST /api/auth/login`
-- `POST /api/auth/register`
-- `POST /api/auth/signup`
-- `POST /api/auth/refresh`
-- `POST /api/auth/logout`
-- `POST /api/auth/forgot-password`
-- `POST /api/auth/reset-password`
-- `POST /api/auth/verify-email`
-- `POST /api/auth/resend-verification`
-
-Passwords are stored as bcrypt hashes. Registration enforces password strength, login verifies the stored hash, access tokens remain JWTs, and refresh tokens are opaque, hashed at rest, rotated on every refresh, and revocable on logout.
-Password reset and email verification tokens are opaque, hashed at rest, expiring, single-use, rate-limited, and audited. Forgot-password and resend-verification responses do not reveal whether an account exists.
-
-### Dashboard And Client APIs
-
-These authenticated routes support the integrated dashboard experience with Prisma-backed persisted data:
-
-- `GET /api/dashboard/summary`
-- `GET /api/dashboard/clients`
-- `GET /api/dashboard/activity`
-- `POST /api/clients`
-- `GET /api/clients/:clientId`
-
-### Onboarding APIs
-
-These authenticated gateway routes provide persisted onboarding progress and document data:
-
-- `GET /api/onboarding/:clientId/progress`
-- `GET /api/onboarding/:clientId/documents?step=<stepKey>`
-- `POST /api/onboarding/:clientId/documents/upload`
-
-### Chat APIs
-
-These authenticated routes provide mock assistant responses for onboarding support:
-
-- `GET /api/ai/chat/messages?clientId=<id>&stepKey=<stepKey>`
-- `POST /api/ai/chat`
-
-### Orchestration
-
+### Terminal 4: Validation Worker Consumer
 ```bash
-curl -X POST http://localhost:4000/api/ai/commands \
-  -H "content-type: application/json" \
-  -H "authorization: Bearer <token>" \
-  -d "{\"command\":\"Onboard Company X\",\"actorId\":\"user-123\"}"
+npm run worker:validation
 ```
 
-The orchestration workflow publishes `client.created` to CRM, data-room, and onboarding worker queues.
-
-## Event Routes
-
-Create a short-lived admin JWT using the same `JWT_SECRET` as the gateway:
-
+### Terminal 5: Review Worker Consumer
 ```bash
-node -e "console.log(require('jsonwebtoken').sign({sub:'admin-1',roles:['admin']}, process.env.JWT_SECRET || 'dev-only-change-this-secret', {expiresIn:'15m'}))"
+npm run worker:review
 ```
 
-Publish `client.created`:
-
+### Terminal 6: Face Verification Worker Consumer
 ```bash
-curl -X POST http://localhost:4000/api/events/client-created \
-  -H "content-type: application/json" \
-  -H "authorization: Bearer <token>" \
-  -d "{\"companyName\":\"Company X\",\"createdBy\":\"admin-1\"}"
+npm run worker:face-verification
 ```
 
-Expected response:
-
-```json
-{
-  "status": "accepted",
-  "event": "client.created",
-  "targets": ["crm-service", "data-room-service"]
-}
-```
-
-Publish `document.uploaded`:
-
+### Terminal 7: CRM Sync Worker Consumer
 ```bash
-curl -X POST http://localhost:4000/api/events/document-uploaded \
-  -H "content-type: application/json" \
-  -H "authorization: Bearer <token>" \
-  -d "{\"clientId\":\"client-12345\",\"fileName\":\"msa.pdf\",\"uploadedBy\":\"admin-1\"}"
+npm run worker:crm-sync
 ```
 
-Expected worker output includes:
-
-- `CRM received client.created`
-- `Data-room provisioning started`
-- `onboarding.workflow.start`
-- `CRM received document.uploaded`
-- `onboarding.document.received`
-
-## Event Architecture
-
-The shared `@ai-platform/events` package provides:
-
-- Redis event bus adapter
-- BullMQ fanout queues per event and consumer
-- Publisher and subscriber abstractions
-- Zod event schema validation
-- Idempotency store
-- Retry and exponential backoff configuration
-- Per-consumer dead-letter queues
-- Queue statistics for health checks
-
-Implemented event names:
-
-- `client.created`
-- `client.onboarded`
-- `document.uploaded`
-- `workflow.completed`
-
-Current gateway-published flows:
-
-- `/api/events/client-created` publishes `client.created` to `crm-service` and `data-room-service`
-- `/api/events/document-uploaded` publishes `document.uploaded` to `crm-service` and `onboarding-service`
-- `/api/ai/commands` publishes `client.created` to `crm-service`, `data-room-service`, and `onboarding-service`
-- `/api/clients` inserts a client in PostgreSQL, then publishes `client.created` to `crm-service`, `data-room-service`, and `onboarding-service`
-- `/api/onboarding/:clientId/documents/upload` inserts a document in PostgreSQL, then publishes `document.uploaded` to `crm-service` and `onboarding-service`
-
-## Database And Prisma
-
-Primary database schema:
-
-- `prisma/schema.prisma`: PostgreSQL Prisma schema used by the application.
-- `prisma/schema.test.prisma`: SQLite-compatible schema used by integration tests.
-- `prisma/migrations/20260601160000_init/migration.sql`: initial PostgreSQL migration.
-- `prisma/seed.ts`: demo data for dashboard and worker-owned state.
-
-Tables:
-
-- `Client`: dashboard client summary and onboarding status source.
-- `Document`: uploaded onboarding documents linked to `Client`.
-- `Activity`: dashboard activity feed entries.
-- `ChatMessage`: persisted onboarding chat exchanges.
-- `OnboardingProgress`: worker-owned onboarding workflow state linked one-to-one to `Client`.
-- `OnboardingCompletedStep`: normalized completed steps for onboarding progress.
-- `CRMRecord`: worker-owned CRM record linked one-to-one to `Client`.
-- `CRMDocumentAssociation`: CRM document associations created from `document.uploaded`.
-- `DataRoom`: worker-owned room metadata linked one-to-one to `Client`.
-
-Prisma commands:
-
+### Terminal 8: KYC Worker Consumer
 ```bash
-npm run prisma:generate
-npm run prisma:migrate
-npm run prisma:deploy
-npm run prisma:seed
-npm run prisma:test:prepare
+npm run worker:kyc
 ```
 
-Migration commands:
+*(Note: The database-room, crm, and onboarding generic workers can be launched using `npm run worker:data-room`, `npm run worker:crm`, and `npm run worker:onboarding` if required.)*
 
-```bash
-docker compose up -d postgres
-npm run prisma:migrate
-```
+---
 
-For deployment-style migration application:
+## API Documentation
 
-```bash
-npm run prisma:deploy
-```
+### Swagger & OpenAPI Spec
+Available in JSON schema configuration:
+- `GET http://localhost:4000/openapi.json`
 
-Seed commands:
+### Health Endpoints
+- **Gateway Health:** `GET /health`
+- **Downstream Services Health:** `GET /health/services`
+- **BullMQ Event Queue Health:** `GET /health/events`
 
-```bash
-npm run prisma:seed
-```
+### Metrics Exporter
+- **Prometheus Metrics:** `GET /metrics`
 
-Expected seeded demo data:
+### Core Routes Summary
+- `POST /api/auth/login`: Issue local session tokens
+- `POST /api/ocr/extract`: Submit document text extraction tasks
+- `POST /api/validation/document`: Enqueue document audits
+- `POST /api/review/approve` / `reject`: Enqueue manual decisions
+- `POST /api/crm/sync`: Synchronize record profiles
+- `POST /api/events/replay`: Force-replay failed jobs from DLQ
 
-- `client-001`, `client-002`, `client-003`
-- one sample document for `client-001`
-- onboarding progress for `client-001`
-- CRM record `crm-client-001`
-- data room `room-client-001`
-
-Docker commands:
-
-```bash
-docker compose up -d postgres redis
-docker compose ps
-docker compose down
-```
-
-Optional Jaeger tracing:
-
-```bash
-docker compose --profile tracing up -d jaeger
-```
-
-Then set:
-
-```bash
-TRACING_ENABLED=true
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
-```
-
-Tracing uses OpenTelemetry HTTP, Express, and Prisma instrumentation in the gateway. Worker
-consumers continue the originating trace from event metadata and emit processing spans.
-
-Optional Grafana dashboards:
-
-```bash
-docker compose --profile observability up -d prometheus grafana
-```
-
-Grafana is available at `http://localhost:3000` and provisions `docker/grafana/dashboards/grafana-dashboard.json`.
-
-Persistent event-driven flow:
-
-```text
-Frontend
-↓
-Gateway routes
-↓
-PostgreSQL insert/update through Prisma
-↓
-EventBus
-↓
-Redis/BullMQ
-↓
-Workers
-↓
-PostgreSQL worker-side updates through Prisma
-```
-
-## Authentication And RBAC
-
-Protected gateway routes require either:
-
-- `Authorization: Bearer <jwt>`
-- `x-api-key: <service-key>`
-
-JWT payloads use:
-
-```json
-{
-  "sub": "user-or-service-id",
-  "roles": ["admin", "user"]
-}
-```
-
-Roles are `admin`, `user`, and `service`.
-
-RBAC rules:
-
-- `/api/crm/*`: `admin`
-- `/api/onboarding/*`: `admin`, `user`
-- `/api/data-room/*`: `admin`, `user`, `service`
-- `/api/events/client-created`: `admin`, `service`
-- `/api/events/document-uploaded`: `admin`, `user`, `service`
-- `/api/dashboard/*`: `admin`, `user`
-- `/api/clients/*`: `admin`, `user`
-- `/api/ai/commands`: `admin`, `user`
-- `/api/ai/chat*`: `admin`, `user`
-
-## Health, Docs, And Metrics
-
-```bash
-curl http://localhost:4000/health
-curl http://localhost:4000/health/services
-curl http://localhost:4000/health/events
-curl http://localhost:4000/openapi.json
-curl http://localhost:4000/metrics
-```
-
-- `/health` reports gateway health
-- `/health/services` reports downstream service health
-- `/health/events` reports BullMQ queue and DLQ health
-- `/openapi.json` documents gateway auth, events, proxy routes, health, and metrics
-- `/metrics` exports gateway uptime, request count, and request duration metrics
-- `/metrics` also exports error, auth failure, event publish/consume, worker processing, and Prisma query counters when observed by the process
-
-## Storage
-
-Document uploads keep the existing JSON API contract and also accept `multipart/form-data` with a `file` field. Supported file types are PDF, DOCX, PNG, JPG, and JPEG. Each `Document` row stores content type, byte size, SHA-256 checksum, bucket, key, storage URL, and provider metadata.
-
-Local development:
-
-```bash
-STORAGE_PROVIDER=local
-LOCAL_STORAGE_DIR=storage/documents
-```
-
-S3-compatible deployments:
-
-```bash
-STORAGE_PROVIDER=s3
-S3_BUCKET=<bucket>
-S3_REGION=<region>
-S3_PREFIX=documents
-```
-
-The S3 provider stores the actual file bytes with `PutObject` and generates download URLs through `GET /api/onboarding/:clientId/documents/:documentId/download-url?expiresIn=900`. The route is RBAC-protected, validates document ownership by client/document ID, and writes an audit entry. Configure credentials through the runtime environment or platform identity.
-
-## Alerting, Secrets, And Worker Metrics
-
-Alerting is environment-configurable:
-
-```bash
-ALERT_PROVIDER=console
-SLACK_WEBHOOK_URL=
-```
-
-Set `ALERT_PROVIDER=slack` with `SLACK_WEBHOOK_URL` to send alerts to Slack; console logging remains the fallback. Alerts cover Redis failures, database connectivity failures, worker job failures, DLQ growth, high error rate, and high latency.
-
-Secret loading supports `SECRET_PROVIDER=env` and `SECRET_PROVIDER=aws`. For AWS Secrets Manager, set `AWS_SECRETS_REGION` and `AWS_SECRETS_JSON_ID`; the secret value should be a JSON object containing runtime environment keys. Startup validation checks required secret presence and never logs secret values.
-
-Workers expose Prometheus metrics on `/metrics`. Default ports are `4101` for CRM, `4102` for data-room, and `4103` for onboarding, or set `WORKER_METRICS_PORT` explicitly.
-
-## Backup And Restore
-
-PostgreSQL backups use `pg_dump` custom format:
-
-```bash
-scripts/backup-db.sh
-scripts/restore-db.sh backups/<file>.dump
-```
-
-Windows PowerShell:
-
-```powershell
-.\scripts\backup-db.ps1
-.\scripts\restore-db.ps1 -BackupFile backups\<file>.dump
-```
-
-Disaster recovery validation against a disposable database:
-
-```powershell
-.\scripts\validate-dr.ps1 -DatabaseUrl "postgresql://postgres:postgres@localhost:5432/ai_platform_dr"
-```
-
-```bash
-scripts/validate-dr.sh "postgresql://postgres:postgres@localhost:5432/ai_platform_dr"
-```
-
-Gateway and worker logs are structured JSON and include request IDs, correlation IDs, event IDs, service names, routes, and status fields where available.
+---
 
 ## Testing
 
-`npm run prisma:test:prepare` generates the SQLite-compatible Prisma test client. `npm test` runs gateway integration tests for:
+Ensure SQLite schemas are initialized, then execute integration tests:
 
-- Missing, expired, and role-mismatched JWT handling
-- Bcrypt login, password strength, refresh token rotation, and logout revocation
-- Admin RBAC success path
-- Redis-compatible rate limiting behavior
-- Event route publishing for `document.uploaded`
-- Frontend-facing auth, dashboard, client, onboarding, and chat route contracts
-- JSON and multipart document upload plus local download URL generation
-- Database-backed client, document, onboarding, CRM, and data-room state
-- OpenAPI route documentation
-- Prometheus-style metrics export
+```bash
+# Generate sqlite schemas
+npm run prisma:test:prepare
 
-## Project Screenshots
+# Run verification test runner
+npm test
+```
 
-- [Event Publishing Success](202-accepted.png)
-- [CRM Service](Crm.png)
-- [Data-room Service](Data_room.png)
-- [API Gateway Running](Gateway_running.png)
-- [Health](Healthy.png)
-- [Onboarding Service](Onboarding.png)
-- [Services](Services.png)
-- [Worker CRM](Worker_crm.png)
-- [Worker Onboarding](Worker_Onboarding.png)
-- [Worker Data-room](Worker-Data_room.png)
+### Expected Results
+```text
+# tests 45
+# suites 16
+# pass 45
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 15175.3006
+```
 
+---
 
+## Event System
 
-## Implemented Features
+- **Publishers:** Routes or orchestrators serialize payload models and write them to Redis event envelopes using `EventPublisher.publish()`.
+- **Subscribers:** Bound to consumers via `EventSubscriber`. Each worker duplicates its Redis connection internally to isolate blocking polling actions.
+- **Retry Strategy:** Backoff retry attempts occur at intervals: `Attempt 1 (Immediate) → Attempt 2 (0ms) → Attempt 3 (5s) → Attempt 4 (15s) → Attempt 5 (30s)`.
+- **DLQ Redirection:** If a job fails the 5th attempt, it is removed from the active queue and moved to the dead letter queue (e.g. `events-document-uploaded-ocr-service-dlq`).
+- **Replay System:** Replaying a job reads it from the DLQ, schedules it on the main queue with a replay prefix, and cleans up the dead letter record.
 
-### Frontend
+---
 
-✓ React + TypeScript Frontend
-✓ Vite Development Environment
-✓ Authentication & Login UI
-✓ Dashboard UI
-✓ Client Management Interface
-✓ Onboarding Workflow Interface
-✓ Document Upload Interface
-✓ AI Chat Interface
-✓ Frontend–Backend Integration
+## Production Hardening
 
-### Backend
+1.  **Shared Redis connection management:** Utilizes `RedisConnectionFactory.getSharedConnection()` to share a single connection across standard event buses, publishers, and routes, avoiding connection leaks.
+2.  **Configurable worker concurrency:** Worker thread sizing is governed by `WORKER_CONCURRENCY` in the env file.
+3.  **Graceful shutdown handling:** Listeners intercept shutdown signals (`SIGINT`/`SIGTERM`) and wait for active jobs to finish, with a 15-second safety force-quit timeout.
+4.  **Environment validation:** Pre-boot schema parser audits configurations, logging issues to stderr and exiting immediately on validation failure.
+5.  **Queue health monitoring:** Exposes real-time backlog counts under Prometheus indicators in the gateway's `/metrics` response.
 
-✓ API Gateway Architecture
-✓ Event-Driven Architecture
-✓ JWT Authentication
-✓ Role-Based Access Control (RBAC)
-✓ Redis Integration
-✓ BullMQ Queue Processing
-✓ Client Creation Workflow
-✓ Document Upload Workflow
-✓ CRM Service Integration
-✓ Data Room Provisioning
-✓ Onboarding Progress Tracking
-✓ Health Monitoring Endpoints
-✓ OpenAPI Documentation
-✓ Metrics & Observability
+---
 
-### Event Processing
+## Deployment
 
-✓ client.created Event Publishing
-✓ document.uploaded Event Publishing
-✓ CRM Worker Processing
-✓ Data Room Worker Processing
-✓ Onboarding Worker Processing
-✓ Event-Based State Updates
+1.  **Build Phase:** Compile packages/events first, then build gateway distribution folders:
+    ```bash
+    npm run build
+    ```
+2.  **Migration Phase:** Run deployment-style migrations inside target environments:
+    ```bash
+    npm run prisma:deploy
+    ```
+3.  **Startup Sequence:** 
+    - Verify PostgreSQL and Redis instance health checks.
+    - Run migrations (`prisma:deploy`).
+    - Start Downstream mock services.
+    - Start API Gateway (`npm run start` or `node dist/index.js`).
+    - Launch individual worker processes.
+4.  **Health Verification:** Query `/health/services` and `/health/events` to ensure target subsystems are reachable.
 
-### Quality Assurance
+---
 
-✓ Automated Integration Tests (16/16 Passed)
-✓ TypeScript Build Validation
-✓ End-to-End Integration Testing
-✓ GitHub Repository Integration
+## Troubleshooting
 
+### Redis Connection Failures
+- **Symptom:** Gateway or workers refuse to boot up, outputting connection timeout alerts.
+- **Fix:** Ensure Redis container port `6379` is open. Test using `redis-cli ping` or verify network firewalls.
+
+### Prisma Migration Lockups
+- **Symptom:** Migration execution hangs on deployment start.
+- **Fix:** Terminate stale DB client connections. Confirm postgres user permissions are sufficient to modify schemas.
+
+### JWT Verification Failures
+- **Symptom:** Valid requests fail with `token_expired` or `unauthorized` errors.
+- **Fix:** Check system clock synchronization (drift will invalidate tokens). Ensure `JWT_SECRET` matches across gateway deployments.
+
+### Queue Backlog Growths
+- **Symptom:** Prometheus gauges show `gateway_worker_queue_waiting` growing.
+- **Fix:** Scaling issue. Increase worker node counts, or raise the `WORKER_CONCURRENCY` parameter.
+
+---
 
 ## Team Members
 
@@ -606,3 +391,15 @@ Gateway and worker logs are structured JSON and include request IDs, correlation
 - Mahika - AI Engineer
 - Darshan - Frontend Developer (React UI Engineer)
 - Rahul - Dashboard & Integration Engineer
+
+---
+
+## Production Readiness Status
+
+- [x] TypeScript Build Passing
+- [x] 45/45 Tests Passing
+- [x] 16/16 Test Suites Passing
+- [x] Event Pipeline Verified
+- [x] Production Hardening Complete
+
+**Status:** **PRODUCTION READY**

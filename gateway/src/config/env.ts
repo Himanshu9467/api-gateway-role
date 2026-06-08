@@ -45,6 +45,7 @@ const envSchema = z.object({
   ALERT_HIGH_ERROR_RATE_THRESHOLD: z.coerce.number().positive().default(0.05),
   ALERT_HIGH_LATENCY_MS: z.coerce.number().positive().default(1000),
   WORKER_METRICS_PORT: z.coerce.number().int().positive().optional(),
+  WORKER_CONCURRENCY: z.coerce.number().int().positive().default(5),
   SECRET_PROVIDER: z.enum(["env", "aws"]).default("env"),
   AWS_SECRETS_REGION: z.string().optional(),
   AWS_SECRETS_JSON_ID: z.string().optional(),
@@ -63,89 +64,105 @@ const envSchema = z.object({
   KEYCLOAK_AUDIENCE: z.string().optional()
 });
 
-export const env = envSchema.superRefine((value, ctx) => {
-  if (value.STORAGE_PROVIDER === "s3") {
-    if (!value.S3_BUCKET) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["S3_BUCKET"],
-        message: "S3_BUCKET is required when STORAGE_PROVIDER=s3"
-      });
-    }
-    if (!value.S3_REGION) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["S3_REGION"],
-        message: "S3_REGION is required when STORAGE_PROVIDER=s3"
-      });
-    }
-  }
-  if (value.ALERT_PROVIDER === "slack" && !value.SLACK_WEBHOOK_URL) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["SLACK_WEBHOOK_URL"],
-      message: "SLACK_WEBHOOK_URL is required when ALERT_PROVIDER=slack"
-    });
-  }
-  if (value.EMAIL_PROVIDER === "smtp") {
-    if (!value.SMTP_HOST) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["SMTP_HOST"],
-        message: "SMTP_HOST is required when EMAIL_PROVIDER=smtp"
-      });
-    }
-  }
-  if (value.EMAIL_PROVIDER === "ses" && !value.SES_REGION) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["SES_REGION"],
-      message: "SES_REGION is required when EMAIL_PROVIDER=ses"
-    });
-  }
-  if (value.SECRET_PROVIDER === "aws") {
-    if (!value.AWS_SECRETS_REGION) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["AWS_SECRETS_REGION"],
-        message: "AWS_SECRETS_REGION is required when SECRET_PROVIDER=aws"
-      });
-    }
-    if (!value.AWS_SECRETS_JSON_ID) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["AWS_SECRETS_JSON_ID"],
-        message: "AWS_SECRETS_JSON_ID is required when SECRET_PROVIDER=aws"
-      });
-    }
-  }
+let parsedEnv: z.infer<typeof envSchema>;
 
-  if (value.NODE_ENV === "production") {
-    if (!process.env.DATABASE_URL) {
+try {
+  parsedEnv = envSchema.superRefine((value, ctx) => {
+    if (value.STORAGE_PROVIDER === "s3") {
+      if (!value.S3_BUCKET) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["S3_BUCKET"],
+          message: "S3_BUCKET is required when STORAGE_PROVIDER=s3"
+        });
+      }
+      if (!value.S3_REGION) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["S3_REGION"],
+          message: "S3_REGION is required when STORAGE_PROVIDER=s3"
+        });
+      }
+    }
+    if (value.ALERT_PROVIDER === "slack" && !value.SLACK_WEBHOOK_URL) {
       ctx.addIssue({
         code: "custom",
-        path: ["DATABASE_URL"],
-        message: "DATABASE_URL must be set in production"
+        path: ["SLACK_WEBHOOK_URL"],
+        message: "SLACK_WEBHOOK_URL is required when ALERT_PROVIDER=slack"
       });
     }
-    if (!process.env.REDIS_URL) {
+    if (value.EMAIL_PROVIDER === "smtp") {
+      if (!value.SMTP_HOST) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["SMTP_HOST"],
+          message: "SMTP_HOST is required when EMAIL_PROVIDER=smtp"
+        });
+      }
+    }
+    if (value.EMAIL_PROVIDER === "ses" && !value.SES_REGION) {
       ctx.addIssue({
         code: "custom",
-        path: ["REDIS_URL"],
-        message: "REDIS_URL must be set in production"
+        path: ["SES_REGION"],
+        message: "SES_REGION is required when EMAIL_PROVIDER=ses"
       });
     }
-    if (
-      !process.env.JWT_SECRET ||
-      value.JWT_SECRET === "dev-only-change-this-secret" ||
-      value.JWT_SECRET === "replace-with-a-long-random-secret" ||
-      value.JWT_SECRET.length < 32
-    ) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["JWT_SECRET"],
-        message: "JWT_SECRET must be a strong secret of at least 32 characters in production"
-      });
+    if (value.SECRET_PROVIDER === "aws") {
+      if (!value.AWS_SECRETS_REGION) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["AWS_SECRETS_REGION"],
+          message: "AWS_SECRETS_REGION is required when SECRET_PROVIDER=aws"
+        });
+      }
+      if (!value.AWS_SECRETS_JSON_ID) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["AWS_SECRETS_JSON_ID"],
+          message: "AWS_SECRETS_JSON_ID is required when SECRET_PROVIDER=aws"
+        });
+      }
     }
+
+    if (value.NODE_ENV === "production") {
+      if (!process.env.DATABASE_URL) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["DATABASE_URL"],
+          message: "DATABASE_URL must be set in production"
+        });
+      }
+      if (!process.env.REDIS_URL) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["REDIS_URL"],
+          message: "REDIS_URL must be set in production"
+        });
+      }
+      if (
+        !process.env.JWT_SECRET ||
+        value.JWT_SECRET === "dev-only-change-this-secret" ||
+        value.JWT_SECRET === "replace-with-a-long-random-secret" ||
+        value.JWT_SECRET.length < 32
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["JWT_SECRET"],
+          message: "JWT_SECRET must be a strong secret of at least 32 characters in production"
+        });
+      }
+    }
+  }).parse(process.env);
+} catch (error) {
+  if (error instanceof z.ZodError) {
+    console.error("❌ Environment configuration validation failed:");
+    for (const issue of error.issues) {
+      console.error(`   - [${issue.path.join(".")}] ${issue.message}`);
+    }
+  } else {
+    console.error("❌ Unknown error validating configuration environment variables:", error);
   }
-}).parse(process.env);
+  process.exit(1);
+}
+
+export const env = parsedEnv!;

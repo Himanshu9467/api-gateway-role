@@ -1,7 +1,7 @@
 import {
   JsonEventLogger,
   createEventBus,
-  createRedisConnection,
+  RedisConnectionFactory,
   type EventEnvelope,
   type EventHandler,
   type EventName
@@ -33,7 +33,7 @@ export async function startExampleSubscribers(
   serviceName: string,
   subscriptions: AnyExampleSubscription[]
 ): Promise<void> {
-  const redis = createRedisConnection({ url: env.REDIS_URL });
+  const redis = RedisConnectionFactory.getSharedConnection({ url: env.REDIS_URL });
   const logger = new JsonEventLogger(serviceName);
   redis.on("error", (error) => {
     logger.error("redis.connection.error", {
@@ -50,7 +50,8 @@ export async function startExampleSubscribers(
     driver: "redis",
     serviceName,
     redisConnection: redis,
-    logger
+    logger,
+    concurrency: env.WORKER_CONCURRENCY
   });
   await Promise.all(
     subscriptions.map((subscription) =>
@@ -107,11 +108,28 @@ export async function startExampleSubscribers(
   const metricsServer = startWorkerMetricsServer(serviceName, eventBus);
 
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
-    logger.warn("example.consumer.shutdown", { signal, serviceName });
-    metricsServer?.close();
-    await eventBus.close();
-    redis.disconnect();
-    process.exit(0);
+    logger.warn("example.consumer.shutdown.started", { signal, serviceName });
+
+    // Force-quit after 15 seconds safety timeout if clean-up hangs
+    const forceExitTimeout = setTimeout(() => {
+      logger.error("example.consumer.shutdown.timeout", { serviceName });
+      process.exit(1);
+    }, 15_000);
+    forceExitTimeout.unref();
+
+    try {
+      metricsServer?.close();
+      await eventBus.close();
+      await RedisConnectionFactory.closeAll();
+      logger.warn("example.consumer.shutdown.completed", { signal, serviceName });
+      clearTimeout(forceExitTimeout);
+      process.exit(0);
+    } catch (error) {
+      logger.error("example.consumer.shutdown.failed", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      process.exit(1);
+    }
   };
 
   process.on("SIGINT", shutdown);
@@ -148,8 +166,14 @@ function startWorkerMetricsServer(serviceName: string, eventBus: { queueStats?: 
 }
 
 function defaultWorkerMetricsPort(serviceName: string): number {
+  if (serviceName.includes("crm-sync")) return 4107;
   if (serviceName.includes("crm")) return 4101;
   if (serviceName.includes("data-room")) return 4102;
   if (serviceName.includes("onboarding")) return 4103;
+  if (serviceName.includes("ocr")) return 4104;
+  if (serviceName.includes("validation")) return 4105;
+  if (serviceName.includes("review")) return 4106;
+  if (serviceName.includes("face-verification")) return 4108;
+  if (serviceName.includes("kyc")) return 4109;
   return 4100;
 }

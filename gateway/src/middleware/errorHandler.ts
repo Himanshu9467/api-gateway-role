@@ -14,6 +14,24 @@ export function errorHandler(logger: Logger): ErrorRequestHandler {
       return;
     }
 
+    if ((error as any)?.code === "P2002") {
+      const target = (error as any)?.meta?.target;
+      const targetStr = Array.isArray(target) ? target.join(", ") : String(target ?? "");
+      const modelName = (error as any)?.meta?.modelName;
+      const errMessage = error instanceof Error ? error.message : String(error ?? "");
+      const isEmail = 
+        targetStr.toLowerCase().includes("email") || 
+        modelName === "User" || 
+        errMessage.toLowerCase().includes("email");
+
+      res.status(409).json({
+        error: "conflict_error",
+        message: isEmail ? "Email is already registered" : "Unique constraint violation",
+        requestId: req.requestId
+      });
+      return;
+    }
+
     logger.error("http.request.failed", {
       requestId: req.requestId,
       method: req.method,

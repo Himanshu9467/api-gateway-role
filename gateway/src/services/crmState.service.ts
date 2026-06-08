@@ -105,6 +105,25 @@ export async function getCrmRecord(clientId: string): Promise<CrmRecord | undefi
   return record ? toCrmRecord(record) : undefined;
 }
 
+export async function syncCrmRecord(
+  customerId: string
+): Promise<{ customerId: string; crmReference: string }> {
+  const crmReference = `crm-ref-${customerId}-${Date.now()}`;
+
+  const existing = await prisma.cRMRecord.findUnique({
+    where: { clientId: customerId }
+  });
+
+  if (existing) {
+    await prisma.cRMRecord.update({
+      where: { crmId: existing.crmId },
+      data: { plan: existing.plan }
+    });
+  }
+
+  return { customerId, crmReference };
+}
+
 function toCrmRecord(record: {
   crmId: string;
   clientId: string;

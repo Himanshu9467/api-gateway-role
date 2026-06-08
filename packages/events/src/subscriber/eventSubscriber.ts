@@ -1,10 +1,10 @@
 import { Worker, type Job } from "bullmq";
-import type { Redis } from "ioredis";
+import { Redis } from "ioredis";
 
 import { eventEnvelopeSchema, eventSchemas } from "../schemas/events";
 import { IdempotencyStore } from "../idempotency/idempotencyStore";
 import { JsonEventLogger } from "../logging/jsonLogger";
-import { QueueManager } from "../queue/queueManager";
+import { QueueManager, customBackoffDelay } from "../queue/queueManager";
 import { SubscriptionRegistry } from "./subscriptionRegistry";
 
 import type {
@@ -26,6 +26,7 @@ export interface EventSubscriberDependencies {
 
 export class EventSubscriber<N extends EventName> {
   private worker?: Worker<EventEnvelope<N>>;
+  private workerConnection?: Redis;
   private readonly queueManager: QueueManager;
   private readonly registry: SubscriptionRegistry;
   private readonly idempotencyStore: IdempotencyStore;
@@ -64,12 +65,19 @@ export class EventSubscriber<N extends EventName> {
       this.options.consumerName
     );
 
+    this.workerConnection = (this.dependencies.connection as any).duplicate
+      ? (this.dependencies.connection as any).duplicate()
+      : this.dependencies.connection;
+
     this.worker = new Worker<EventEnvelope<N>>(
       queueName,
       async (job) => this.process(job),
       {
-        connection: this.dependencies.connection,
-        concurrency: this.options.concurrency ?? 5
+        connection: this.workerConnection!,
+        concurrency: this.options.concurrency ?? 5,
+        settings: {
+          backoffStrategy: customBackoffDelay
+        }
       }
     );
 
@@ -130,6 +138,15 @@ export class EventSubscriber<N extends EventName> {
 
   async close(): Promise<void> {
     await this.worker?.close();
+    if (this.workerConnection && this.workerConnection !== this.dependencies.connection) {
+      try {
+        if (this.workerConnection.status !== "end") {
+          await this.workerConnection.quit();
+        }
+      } catch (e) {
+        this.workerConnection.disconnect();
+      }
+    }
   }
 
   private async process(job: Job<EventEnvelope<N>>): Promise<void> {

@@ -24,3 +24,39 @@ export function createRedisConnection(options: RedisConnectionOptions): Redis {
   });
   return connection;
 }
+
+export class RedisConnectionFactory {
+  private static sharedConnection: Redis | null = null;
+  private static connections: Redis[] = [];
+
+  static getSharedConnection(options: RedisConnectionOptions): Redis {
+    if (!this.sharedConnection) {
+      this.sharedConnection = createRedisConnection(options);
+      this.connections.push(this.sharedConnection);
+    }
+    return this.sharedConnection;
+  }
+
+  static createWorkerConnection(options: RedisConnectionOptions): Redis {
+    const conn = createRedisConnection(options);
+    this.connections.push(conn);
+    return conn;
+  }
+
+  static async closeAll(): Promise<void> {
+    await Promise.all(
+      this.connections.map(async (conn) => {
+        try {
+          if (conn.status !== "end") {
+            await conn.quit();
+          }
+        } catch (e) {
+          conn.disconnect();
+        }
+      })
+    );
+    this.connections = [];
+    this.sharedConnection = null;
+  }
+}
+
